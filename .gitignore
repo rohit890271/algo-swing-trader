@@ -1,0 +1,23 @@
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# IDE and OS Files
+.vscode/
+.idea/
+.DS_Store
+
+# User generated files / Trades
+trades_log.csv
+
+# Wheels and Zips
+*.whl
+*.zip
+Form16.zip
