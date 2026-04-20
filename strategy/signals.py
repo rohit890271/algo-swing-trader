@@ -204,7 +204,7 @@ def generate_exit_signal(
 # Pullback entry screener (single-bar verdict)
 # ──────────────────────────────────────────────
 
-def check_entry_signal(df: pd.DataFrame) -> dict:
+def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -> dict:
     """Evaluate the *latest bar* of an OHLCV DataFrame against a strict
     set of swing-trade entry conditions.
 
@@ -212,48 +212,58 @@ def check_entry_signal(df: pd.DataFrame) -> dict:
     caller may pass a **raw** OHLCV DataFrame (columns: ``open``,
     ``high``, ``low``, ``close``, ``volume``).
 
-    **All six conditions must be True for a BUY signal:**
+    **All ten conditions must be True for a BUY signal:**
 
     1. Close is above both EMA-50 and EMA-200 (uptrend).
     2. EMA-20 is above EMA-50 (short-term momentum).
-    3. Price has pulled back 5–10 % from the rolling 10-day high.
-    4. RSI (14) is between 40 and 55 (not overbought, not oversold).
+    3. Price has pulled back 5-10 % from the rolling 10-day high.
+    4. RSI (14) is between 45 and 58 (not overbought, not oversold).
     5. The last 3 candles show declining volume **and** today's volume
        is above its own 5-day average (volume dry-up then expansion).
     6. Today's candle is bullish (close > open).
+    7. Relative Strength vs Nifty 50 over 20 days > 0
+       (stock outperforming the benchmark).
+    8. Price must have pulled back for at least 2 consecutive days
+       (close < prev close for 2 days before today).
+    9. ADX (14) > 20 (confirms a trending market, not sideways).
+    10. (Reserved for future use.)
 
     Args:
-        df: OHLCV ``pandas.DataFrame`` with a DatetimeIndex.  Must
-            contain at least 200 rows for the slowest EMA to warm up.
+        df:       OHLCV ``pandas.DataFrame`` with a DatetimeIndex.  Must
+                  contain at least 200 rows for the slowest EMA to warm up.
+        nifty_df: Optional OHLCV DataFrame for the Nifty 50 index
+                  (``^NSEI``).  If ``None``, the relative-strength
+                  check is skipped (treated as passed).
 
     Returns:
         A dict with two keys:
 
-        * ``"signal"`` — ``True`` if all conditions are met, else ``False``.
-        * ``"reason"`` — A human-readable string listing which conditions
-          passed (✓) and which failed (✗).
+        * ``"signal"`` -- ``True`` if all conditions are met, else ``False``.
+        * ``"reason"`` -- A human-readable string listing which conditions
+          passed or failed.
 
     Example::
 
-        >>> result = check_entry_signal(ohlcv_df)
+        >>> result = check_entry_signal(ohlcv_df, nifty_df)
         >>> if result["signal"]:
         ...     print("Entry triggered:", result["reason"])
     """
-    from strategy.indicators import ema, rsi as compute_rsi  # local import to avoid circular ref
+    from strategy.indicators import ema, rsi as compute_rsi, adx as compute_adx
 
-    # ── Ensure we have enough data ───────────
+    # -- Ensure we have enough data -----------
     if len(df) < 200:
         return {
             "signal": False,
-            "reason": "Insufficient data: need ≥ 200 bars for EMA-200 warm-up.",
+            "reason": "Insufficient data: need >= 200 bars for EMA-200 warm-up.",
         }
 
-    # ── Compute indicators on a copy ─────────
+    # -- Compute indicators on a copy ---------
     data = df.copy()
     data["ema_20"]  = ema(data["close"], 20)
     data["ema_50"]  = ema(data["close"], 50)
     data["ema_200"] = ema(data["close"], 200)
     data["rsi"]     = compute_rsi(data["close"], period=14)
+    data["adx"]     = compute_adx(data["high"], data["low"], data["close"], period=14)
 
     # Latest bar values
     latest  = data.iloc[-1]
@@ -263,42 +273,43 @@ def check_entry_signal(df: pd.DataFrame) -> dict:
     ema50   = latest["ema_50"]
     ema200  = latest["ema_200"]
     rsi_val = latest["rsi"]
+    adx_val = latest["adx"]
     volume  = latest["volume"]
 
     reasons: list[str] = []
 
-    # ── Condition 1: Close > EMA-50 AND Close > EMA-200 ──
+    # -- Condition 1: Close > EMA-50 AND Close > EMA-200 --
     cond1 = (close > ema50) and (close > ema200)
     reasons.append(
-        f"{'✓' if cond1 else '✗'} Close ({close:.2f}) "
+        f"{'[PASS]' if cond1 else '[FAIL]'} Close ({close:.2f}) "
         f"{'above' if cond1 else 'NOT above'} EMA-50 ({ema50:.2f}) "
         f"& EMA-200 ({ema200:.2f})"
     )
 
-    # ── Condition 2: EMA-20 > EMA-50 ────────
+    # -- Condition 2: EMA-20 > EMA-50 --------
     cond2 = ema20 > ema50
     reasons.append(
-        f"{'✓' if cond2 else '✗'} EMA-20 ({ema20:.2f}) "
+        f"{'[PASS]' if cond2 else '[FAIL]'} EMA-20 ({ema20:.2f}) "
         f"{'above' if cond2 else 'NOT above'} EMA-50 ({ema50:.2f})"
     )
 
-    # ── Condition 3: Pullback 5–10 % from 10-day high ──
+    # -- Condition 3: Pullback 5-10% from 10-day high --
     high_10d = data["high"].rolling(window=10).max().iloc[-1]
     pullback_pct = ((high_10d - close) / high_10d) * 100.0
     cond3 = 5.0 <= pullback_pct <= 10.0
     reasons.append(
-        f"{'✓' if cond3 else '✗'} Pullback {pullback_pct:.2f}% from "
-        f"10-day high ({high_10d:.2f}) — need 5–10%"
+        f"{'[PASS]' if cond3 else '[FAIL]'} Pullback {pullback_pct:.2f}% from "
+        f"10-day high ({high_10d:.2f}) -- need 5-10%"
     )
 
-    # ── Condition 4: RSI between 40 and 55 ──
-    cond4 = 40.0 <= rsi_val <= 55.0
+    # -- Condition 4: RSI between 45 and 58 --
+    cond4 = 45.0 <= rsi_val <= 58.0
     reasons.append(
-        f"{'✓' if cond4 else '✗'} RSI ({rsi_val:.2f}) "
-        f"{'inside' if cond4 else 'outside'} 40–55 range"
+        f"{'[PASS]' if cond4 else '[FAIL]'} RSI ({rsi_val:.2f}) "
+        f"{'inside' if cond4 else 'outside'} 45-58 range"
     )
 
-    # ── Condition 5: Last 3 candles declining volume + today > 5-day avg ──
+    # -- Condition 5: Last 3 candles declining volume + today > 5-day avg --
     vol_series = data["volume"]
     declining_vol = (
         vol_series.iloc[-4] > vol_series.iloc[-3]
@@ -308,21 +319,58 @@ def check_entry_signal(df: pd.DataFrame) -> dict:
     vol_expansion = volume > vol_avg_5
     cond5 = declining_vol and vol_expansion
     reasons.append(
-        f"{'✓' if declining_vol else '✗'} Last 3 candles declining volume | "
-        f"{'✓' if vol_expansion else '✗'} Today vol ({volume:,.0f}) "
-        f"{'>' if vol_expansion else '≤'} 5-day avg ({vol_avg_5:,.0f})"
+        f"{'[PASS]' if declining_vol else '[FAIL]'} Last 3 candles declining volume | "
+        f"{'[PASS]' if vol_expansion else '[FAIL]'} Today vol ({volume:,.0f}) "
+        f"{'>' if vol_expansion else '<='} 5-day avg ({vol_avg_5:,.0f})"
     )
 
-    # ── Condition 6: Bullish candle (close > open) ──
+    # -- Condition 6: Bullish candle (close > open) --
     cond6 = close > open_
     reasons.append(
-        f"{'✓' if cond6 else '✗'} Bullish candle — "
-        f"Close ({close:.2f}) {'>' if cond6 else '≤'} Open ({open_:.2f})"
+        f"{'[PASS]' if cond6 else '[FAIL]'} Bullish candle -- "
+        f"Close ({close:.2f}) {'>' if cond6 else '<='} Open ({open_:.2f})"
     )
 
-    # ── Composite verdict ────────────────────
-    signal = all([cond1, cond2, cond3, cond4, cond5, cond6])
-    summary = "ALL CONDITIONS MET ✅" if signal else "Entry conditions NOT met ❌"
+    # -- Condition 7: Relative Strength vs Nifty 50 --
+    if nifty_df is not None and len(nifty_df) >= 20:
+        stock_return_20d = (
+            (data["close"].iloc[-1] - data["close"].iloc[-20])
+            / data["close"].iloc[-20]
+        ) * 100.0
+        nifty_return_20d = (
+            (nifty_df["close"].iloc[-1] - nifty_df["close"].iloc[-20])
+            / nifty_df["close"].iloc[-20]
+        ) * 100.0
+        rs_score = stock_return_20d - nifty_return_20d
+        cond7 = rs_score > 0
+        reasons.append(
+            f"{'[PASS]' if cond7 else '[FAIL]'} RS score ({rs_score:+.2f}%) "
+            f"-- stock {stock_return_20d:+.2f}% vs Nifty {nifty_return_20d:+.2f}%"
+        )
+    else:
+        cond7 = True  # skip if no benchmark data available
+        reasons.append("[SKIP] RS vs Nifty -- no benchmark data provided")
+
+    # -- Condition 8: 2 consecutive pullback days before today --
+    cond8 = (
+        data["close"].iloc[-2] < data["close"].iloc[-3]
+        and data["close"].iloc[-3] < data["close"].iloc[-4]
+    )
+    reasons.append(
+        f"{'[PASS]' if cond8 else '[FAIL]'} 2 consecutive pullback days "
+        f"before entry candle"
+    )
+
+    # -- Condition 9: ADX(14) > 20 (trending) --
+    cond9 = adx_val > 20.0
+    reasons.append(
+        f"{'[PASS]' if cond9 else '[FAIL]'} ADX ({adx_val:.2f}) "
+        f"{'>' if cond9 else '<='} 20 -- {'trending' if cond9 else 'sideways'}"
+    )
+
+    # -- Composite verdict --------------------
+    signal = all([cond1, cond2, cond3, cond4, cond5, cond6, cond7, cond8, cond9])
+    summary = "ALL CONDITIONS MET - ENTRY" if signal else "Entry conditions NOT met"
 
     return {
         "signal": signal,

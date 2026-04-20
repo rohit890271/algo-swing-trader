@@ -253,6 +253,38 @@ def is_above_ema(
 
 
 # ──────────────────────────────────────────────
+# ADX — Average Directional Index
+# ──────────────────────────────────────────────
+
+def adx(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    period: int = 14,
+) -> pd.Series:
+    """Calculate the Average Directional Index (ADX).
+
+    ADX measures trend **strength** regardless of direction.
+    Values above 20–25 indicate a trending market; below that
+    the market is considered range-bound / sideways.
+
+    Args:
+        high:   High price series.
+        low:    Low price series.
+        close:  Close price series.
+        period: Look-back period (default ``14``).
+
+    Returns:
+        A ``pandas.Series`` of ADX values named ``"adx"``.
+    """
+    return pd.Series(
+        talib.ADX(high.values, low.values, close.values, timeperiod=period),
+        index=close.index,
+        name="adx",
+    )
+
+
+# ──────────────────────────────────────────────
 # Convenience: attach ALL indicators at once
 # ──────────────────────────────────────────────
 

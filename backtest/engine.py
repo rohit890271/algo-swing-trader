@@ -55,17 +55,18 @@ def _empty_trade_log() -> pd.DataFrame:
 # Core backtest loop for a single symbol
 # ──────────────────────────────────────────────
 
-def _backtest_symbol(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
+def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -> pd.DataFrame:
     """Run a day-by-day backtest on one symbol.
 
-    Starts from bar index 50 (so all indicators have warmed up) and
+    Starts from bar index 200 (so all indicators have warmed up) and
     scans forward one bar at a time.  When not in a trade it calls
     :func:`check_entry_signal`; when in a trade it calls
     :func:`check_exit_signal`.
 
     Args:
-        symbol: NSE ticker name.
-        df:     OHLCV DataFrame (≥ 200 rows) with a DatetimeIndex.
+        symbol:   NSE ticker name.
+        df:       OHLCV DataFrame (>= 250 rows) with a DatetimeIndex.
+        nifty_df: Optional Nifty 50 benchmark DataFrame for RS calc.
 
     Returns:
         A ``pandas.DataFrame`` of completed trades for this symbol.
@@ -86,8 +87,11 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
         current_date = df.index[i]
 
         if not in_trade:
-            # ── Check for an entry ───────────
-            result = check_entry_signal(window)
+            # -- Check for an entry -----------
+            nifty_window = None
+            if nifty_df is not None:
+                nifty_window = nifty_df.loc[nifty_df.index <= current_date]
+            result = check_entry_signal(window, nifty_df=nifty_window)
             if result["signal"]:
                 entry_price = current_bar["close"]
                 entry_date = current_date
@@ -251,9 +255,26 @@ def run_backtest(
     print("=" * 55)
     print("  [SWING TRADING BACKTEST ENGINE]")
     print(f"  Mode : {'PAPER TRADE' if PAPER_TRADE else 'LIVE (caution!)'}")
-    print(f"  Symbols : {', '.join(watchlist)}")
+    print(f"  Symbols : {len(watchlist)} stocks")
     print(f"  History : {days} days")
     print("=" * 55)
+
+    # -- Fetch Nifty 50 benchmark once --------
+    print("\n  Fetching Nifty 50 benchmark (^NSEI)...")
+    try:
+        import yfinance as yf
+        nifty_raw = yf.download("^NSEI", period=f"{days}d", interval="1d", auto_adjust=True)
+        if isinstance(nifty_raw.columns, pd.MultiIndex):
+            nifty_raw.columns = nifty_raw.columns.get_level_values(0)
+        nifty_df = nifty_raw.rename(columns={
+            "Open": "open", "High": "high", "Low": "low",
+            "Close": "close", "Volume": "volume",
+        })[["open", "high", "low", "close", "volume"]].dropna()
+        print(f"  [OK] Nifty 50 benchmark: {len(nifty_df)} bars loaded.")
+    except Exception as e:
+        print(f"  [!] Could not fetch Nifty 50 benchmark: {e}")
+        print("       RS filter will be skipped.")
+        nifty_df = None
 
     all_trades = []
 
@@ -281,7 +302,7 @@ def run_backtest(
             )
             continue
 
-        symbol_trades = _backtest_symbol(symbol, df)
+        symbol_trades = _backtest_symbol(symbol, df, nifty_df=nifty_df)
 
         if symbol_trades.empty:
             print(f"  [-] No trades generated for {symbol}.")
