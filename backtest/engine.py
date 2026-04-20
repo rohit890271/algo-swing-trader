@@ -31,7 +31,7 @@ from config import (
 )
 from broker.zerodha_api import get_ohlcv_free
 from strategy.signals import check_entry_signal, check_exit_signal
-from strategy.risk import calculate_stop_loss, calculate_target, position_size
+from strategy.risk import calculate_atr_stop_loss, calculate_target, position_size
 
 
 # ──────────────────────────────────────────────
@@ -95,15 +95,22 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | Non
             if result["signal"]:
                 entry_price = current_bar["close"]
                 entry_date = current_date
-                stop_loss = calculate_stop_loss(entry_price, stop_pct=0.03)
+
+                # ATR-based stop loss (1.5x ATR, clamped 1.5%-4%)
+                from strategy.indicators import atr as compute_atr_series
+                atr_series = compute_atr_series(window)
+                atr_val = atr_series.iloc[-1]
+                stop_loss = calculate_atr_stop_loss(entry_price, atr_value=atr_val)
+
                 target = calculate_target(entry_price, target_pct=0.08)
                 in_trade = True
 
+                sl_pct = ((entry_price - stop_loss) / entry_price) * 100
                 if PAPER_TRADE:
                     print(
                         f"  [ENTRY] [{symbol}] on {str(current_date)[:10]} "
-                        f"@ ₹{entry_price:,.2f}  |  SL ₹{stop_loss:,.2f}  "
-                        f"|  TGT ₹{target:,.2f}"
+                        f"@ {entry_price:,.2f}  |  SL {stop_loss:,.2f} ({sl_pct:.1f}%)  "
+                        f"|  TGT {target:,.2f}"
                     )
         else:
             # ── Check for an exit ────────────

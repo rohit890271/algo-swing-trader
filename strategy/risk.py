@@ -81,6 +81,66 @@ def calculate_stop_loss(
     return round(entry_price * (1 - stop_pct), 2)
 
 
+def calculate_atr_stop_loss(
+    entry_price: float,
+    atr_value: float,
+    atr_multiplier: float = 1.5,
+    max_stop_pct: float = 0.04,
+    min_stop_pct: float = 0.015,
+) -> float:
+    """Calculate a volatility-adaptive stop-loss using ATR.
+
+    The raw stop distance is ``atr_multiplier x ATR(14)``, but it is
+    clamped between *min_stop_pct* and *max_stop_pct* of the entry
+    price so the stop never becomes unreasonably tight or wide.
+
+    Formula::
+
+        raw_stop   = entry_price - (atr_multiplier x atr_value)
+        raw_pct    = (entry_price - raw_stop) / entry_price
+        clamped    = clamp(raw_pct, min_stop_pct, max_stop_pct)
+        stop_price = entry_price x (1 - clamped)
+
+    Args:
+        entry_price:    Trade entry price (must be > 0).
+        atr_value:      Current ATR(14) value (must be > 0).
+        atr_multiplier: ATR multiplier (default ``1.5``).
+        max_stop_pct:   Maximum stop distance as a fraction of entry
+                        (default ``0.04`` = 4 %).
+        min_stop_pct:   Minimum stop distance as a fraction of entry
+                        (default ``0.015`` = 1.5 %).
+
+    Returns:
+        The absolute stop-loss price, rounded to 2 decimal places.
+
+    Raises:
+        ValueError: If any input fails validation.
+
+    Example::
+
+        >>> calculate_atr_stop_loss(1000.0, atr_value=25.0)
+        962.5   # 1000 - (1.5 x 25) = 962.5  -> 3.75%, within 1.5-4%
+        >>> calculate_atr_stop_loss(1000.0, atr_value=5.0)
+        985.0   # raw = 0.75%, clamped to floor 1.5%
+        >>> calculate_atr_stop_loss(1000.0, atr_value=50.0)
+        960.0   # raw = 7.5%, capped to ceiling 4%
+    """
+    if entry_price <= 0:
+        raise ValueError(f"entry_price must be > 0, got {entry_price}")
+    if atr_value <= 0:
+        raise ValueError(f"atr_value must be > 0, got {atr_value}")
+    if atr_multiplier <= 0:
+        raise ValueError(f"atr_multiplier must be > 0, got {atr_multiplier}")
+
+    # Raw stop distance as a fraction of entry
+    raw_stop_pct = (atr_multiplier * atr_value) / entry_price
+
+    # Clamp between floor and ceiling
+    clamped_pct = max(min_stop_pct, min(raw_stop_pct, max_stop_pct))
+
+    return round(entry_price * (1 - clamped_pct), 2)
+
+
 def atr_stop_loss(
     entry_price: float,
     atr_value: float,
