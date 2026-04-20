@@ -27,6 +27,7 @@ from config import (
     PAPER_TRADE,
     MAX_HOLD_DAYS,
     POSITION_RISK_PCT,
+    MIN_AVG_VOLUME,
 )
 from broker.zerodha_api import get_ohlcv_free
 from strategy.signals import check_entry_signal, check_exit_signal
@@ -76,7 +77,7 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame) -> pd.DataFrame:
     stop_loss = 0.0
     target = 0.0
 
-    start_bar = 50  # skip first 50 bars for indicator warm-up
+    start_bar = 200  # skip first 200 bars for EMA-200 warm-up
 
     for i in range(start_bar, len(df)):
         # Slice up to and including the current bar
@@ -220,7 +221,7 @@ def _print_summary(summary: dict) -> None:
 
 def run_backtest(
     watchlist: list | None = None,
-    days: int = 200,
+    days: int = 800,
     save_csv: bool = True,
     csv_path: str = "trades_log.csv",
 ) -> dict:
@@ -267,8 +268,17 @@ def run_backtest(
             print(f"  [!] Failed to fetch data for {symbol}: {e}")
             continue
 
-        if len(df) < 200:
-            print(f"  [!] Only {len(df)} bars for {symbol}, need ≥ 200. Skipping.")
+        if len(df) < 250:
+            print(f"  [!] Only {len(df)} bars for {symbol}, need >= 250. Skipping.")
+            continue
+
+        # ── Volume liquidity filter ──────────
+        avg_vol_20 = df["volume"].tail(20).mean()
+        if avg_vol_20 < MIN_AVG_VOLUME:
+            print(
+                f"  [!] {symbol} avg 20-day volume = {avg_vol_20:,.0f} "
+                f"< {MIN_AVG_VOLUME:,}. Skipping."
+            )
             continue
 
         symbol_trades = _backtest_symbol(symbol, df)

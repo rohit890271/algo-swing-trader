@@ -92,34 +92,13 @@ MIDCAP_50 = [
     "SAIL", "SYNGENE", "TVSMOTOR", "UBL", "VOLTAS", "ZEEL"
 ]
 
-SMALLCAP_50 = [
-    "ANGELONE", "ANURAS", "BSE", "CDSL", "CENTRALBK", 
-    "CESC", "CHAMBLFERT", "CAMS", "CYIENT", "EIDPARRY", 
-    "FACT", "FSL", "GLENMARK", "GMDCLTD", "GNFC", 
-    "HFCL", "HGS", "HINDCOPPER", "IDFC", "IIFL", 
-    "INDIACEM", "JBCHEPHARM", "JSL", "KARURVYSYA", "KEI", 
-    "LATENTVIEW", "MAHABANK", "METROBRAND", "NBCC", "NEOGEN", 
-    "NHPC", "NLCINDIA", "PVRINOX", "RADICO", "REDINGTON", 
-    "RITES", "RTNINDIA", "SJVN", "SONACOMS", "SUZLON", 
-    "SYRMA", "TEJASNET", "TRIDENT", "UCOBANK", "UTIAMC", 
-    "WELCORP", "WELSPUNIND", "ZENSARTECH"
-]
+# Combined master list: Nifty 100 + Midcap 50 only (no small-caps)
+WATCHLIST: list = sorted(list(set(LARGECAP_100 + MIDCAP_50)))
 
-BSE_SMALLCAP_50 = [
-    "AHLUCONT.BO", "ALLCARGO.BO", "BAJAJCON.BO", "BDL.BO", "BORORENEW.BO", 
-    "BSOFT.BO", "CAPLIPOINT.BO", "CASTROLIND.BO", "CENTURYPLY.BO", "CHALET.BO", 
-    "CHENNPETRO.BO", "CIGNITITEC.BO", "COCHINSHIP.BO", "CSBBANK.BO", "CUB.BO", 
-    "DATAMATICS.BO", "EQUITASBNK.BO", "EVEREADY.BO", "FINCABLES.BO", "GODFRYPHLP.BO", 
-    "GSFC.BO", "HEG.BO", "HSCL.BO", "IFBIND.BO", "IGPL.BO", 
-    "INDOCO.BO", "ISEC.BO", "JBMA.BO", "JKPAPER.BO", "JKLAKSHMI.BO", 
-    "JUBLPHARMA.BO", "KALYANKJIL.BO", "KOLTEPATIL.BO", "LINDEINDIA.BO", "MASTEK.BO", 
-    "MOIL.BO", "NETWORK18.BO", "NIITLTD.BO", "OLECTRA.BO", "OMAXE.BO", 
-    "PNCINFRA.BO", "PRSMJOHNSN.BO", "RAILTEL.BO", "RALLIS.BO", "RATEGAIN.BO", 
-    "SIS.BO", "SOBHA.BO", "TIMKEN.BO", "UJJIVANSFB.BO", "VIPIND.BO"
-]
-
-# Combined master list (using set to remove any overlaps, sorted for alphabetical order)
-WATCHLIST: list = sorted(list(set(LARGECAP_100 + MIDCAP_50 + SMALLCAP_50 + BSE_SMALLCAP_50)))
+# ──────────────────────────────────────────────
+# Volume Filter
+# ──────────────────────────────────────────────
+MIN_AVG_VOLUME: int = 500_000              # skip stocks with 20-day avg vol < 500k
 
 
 # ──────────────────────────────────────────────
