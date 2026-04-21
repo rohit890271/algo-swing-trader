@@ -302,11 +302,11 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -
         f"10-day high ({high_10d:.2f}) -- need 5-10%"
     )
 
-    # -- Condition 4: RSI between 45 and 58 --
-    cond4 = 45.0 <= rsi_val <= 58.0
+    # -- Condition 4: RSI between 42 and 60 --
+    cond4 = 42.0 <= rsi_val <= 60.0
     reasons.append(
         f"{'[PASS]' if cond4 else '[FAIL]'} RSI ({rsi_val:.2f}) "
-        f"{'inside' if cond4 else 'outside'} 45-58 range"
+        f"{'inside' if cond4 else 'outside'} 42-60 range"
     )
 
     # -- Condition 5: Last 3 candles declining volume + today > 5-day avg --
@@ -331,41 +331,33 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -
         f"Close ({close:.2f}) {'>' if cond6 else '<='} Open ({open_:.2f})"
     )
 
-    # -- Condition 7: Relative Strength vs Nifty 50 --
-    if nifty_df is not None and len(nifty_df) >= 20:
-        stock_return_20d = (
-            (data["close"].iloc[-1] - data["close"].iloc[-20])
-            / data["close"].iloc[-20]
+    # -- Condition 7: Not in freefall (1-week return > -5%) --
+    if len(data) >= 5:
+        week_return = (
+            (data["close"].iloc[-1] - data["close"].iloc[-5])
+            / data["close"].iloc[-5]
         ) * 100.0
-        nifty_return_20d = (
-            (nifty_df["close"].iloc[-1] - nifty_df["close"].iloc[-20])
-            / nifty_df["close"].iloc[-20]
-        ) * 100.0
-        rs_score = stock_return_20d - nifty_return_20d
-        cond7 = rs_score > 0
+        cond7 = week_return > -5.0
         reasons.append(
-            f"{'[PASS]' if cond7 else '[FAIL]'} RS score ({rs_score:+.2f}%) "
-            f"-- stock {stock_return_20d:+.2f}% vs Nifty {nifty_return_20d:+.2f}%"
+            f"{'[PASS]' if cond7 else '[FAIL]'} 1-week return {week_return:+.2f}% "
+            f"-- need > -5%"
         )
     else:
-        cond7 = True  # skip if no benchmark data available
-        reasons.append("[SKIP] RS vs Nifty -- no benchmark data provided")
+        cond7 = True
+        reasons.append("[SKIP] 1-week return -- not enough data")
 
-    # -- Condition 8: 2 consecutive pullback days before today --
-    cond8 = (
-        data["close"].iloc[-2] < data["close"].iloc[-3]
-        and data["close"].iloc[-3] < data["close"].iloc[-4]
-    )
+    # -- Condition 8: at least 1 pullback day before today --
+    cond8 = data["close"].iloc[-2] < data["close"].iloc[-3]
     reasons.append(
-        f"{'[PASS]' if cond8 else '[FAIL]'} 2 consecutive pullback days "
+        f"{'[PASS]' if cond8 else '[FAIL]'} 1 pullback day "
         f"before entry candle"
     )
 
-    # -- Condition 9: ADX(14) > 20 (trending) --
-    cond9 = adx_val > 20.0
+    # -- Condition 9: ADX(14) > 18 (trending) --
+    cond9 = adx_val > 18.0
     reasons.append(
         f"{'[PASS]' if cond9 else '[FAIL]'} ADX ({adx_val:.2f}) "
-        f"{'>' if cond9 else '<='} 20 -- {'trending' if cond9 else 'sideways'}"
+        f"{'>' if cond9 else '<='} 18 -- {'trending' if cond9 else 'sideways'}"
     )
 
     # -- Composite verdict --------------------

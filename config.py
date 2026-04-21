@@ -99,7 +99,7 @@ WATCHLIST: list = sorted(list(set(LARGECAP_100 + MIDCAP_50)))
 # ──────────────────────────────────────────────
 # Volume Filter
 # ──────────────────────────────────────────────
-MIN_AVG_VOLUME: int = 500_000              # skip stocks with 20-day avg vol < 500k
+MIN_AVG_VOLUME: int = 300_000              # skip stocks with 20-day avg vol < 300k
 
 
 # ──────────────────────────────────────────────
