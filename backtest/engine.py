@@ -267,7 +267,7 @@ def _print_summary(summary: dict) -> None:
 
 def run_backtest(
     watchlist: list | None = None,
-    days: int = 800,
+    days: int = 1200,
     save_csv: bool = True,
     csv_path: str = "trades_log.csv",
 ) -> dict:
