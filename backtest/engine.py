@@ -77,6 +77,8 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | Non
     entry_date = None
     stop_loss = 0.0
     target = 0.0
+    partial_taken = False       # tracks whether 50% partial exit done
+    position_pct = 1.0          # 1.0 = full, 0.5 = half remaining
 
     start_bar = 200  # skip first 200 bars for EMA-200 warm-up
 
@@ -104,6 +106,8 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | Non
 
                 target = calculate_target(entry_price, target_pct=0.08)
                 in_trade = True
+                partial_taken = False
+                position_pct = 1.0
 
                 sl_pct = ((entry_price - stop_loss) / entry_price) * 100
                 if PAPER_TRADE:
@@ -113,7 +117,7 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | Non
                         f"|  TGT {target:,.2f}"
                     )
         else:
-            # ── Check for an exit ────────────
+            # -- Check for an exit ------------
             reason = check_exit_signal(
                 window,
                 entry_price=entry_price,
@@ -121,9 +125,11 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | Non
                 stop_loss=stop_loss,
                 target=target,
                 max_hold_days=MAX_HOLD_DAYS,
+                partial_taken=partial_taken,
             )
 
-            if reason != "HOLD":
+            if reason == "PARTIAL_EXIT_5PCT":
+                # Book 50% of the position at current price
                 exit_price = current_bar["close"]
                 pnl_pct = ((exit_price - entry_price) / entry_price) * 100.0
 
@@ -134,15 +140,44 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | Non
                     "entry_price": round(entry_price, 2),
                     "exit_price": round(exit_price, 2),
                     "pnl_pct": round(pnl_pct, 2),
-                    "exit_reason": reason,
+                    "exit_reason": "PARTIAL_EXIT_50%",
                 })
 
                 if PAPER_TRADE:
+                    print(
+                        f"  [PARTIAL] [{symbol}] 50% EXIT on {str(current_date)[:10]} "
+                        f"@ {exit_price:,.2f}  |  P&L {pnl_pct:+.2f}%  "
+                        f"|  Remaining 50% trailing..."
+                    )
+
+                partial_taken = True
+                position_pct = 0.5
+                # Tighten stop to entry (breakeven) for remaining half
+                stop_loss = entry_price
+
+            elif reason != "HOLD":
+                # Full exit of remaining position
+                exit_price = current_bar["close"]
+                pnl_pct = ((exit_price - entry_price) / entry_price) * 100.0
+                exit_label = reason if position_pct == 1.0 else f"{reason}_RUNNER"
+
+                trades.append({
+                    "symbol": symbol,
+                    "entry_date": entry_date,
+                    "exit_date": current_date,
+                    "entry_price": round(entry_price, 2),
+                    "exit_price": round(exit_price, 2),
+                    "pnl_pct": round(pnl_pct, 2),
+                    "exit_reason": exit_label,
+                })
+
+                if PAPER_TRADE:
+                    pct_label = "100%" if position_pct == 1.0 else "50%"
                     status_lbl = "[WIN]" if pnl_pct > 0 else "[LOSS]"
                     print(
-                        f"  {status_lbl} [{symbol}] EXIT  on {str(current_date)[:10]} "
-                        f"@ ₹{exit_price:,.2f}  |  P&L {pnl_pct:+.2f}%  "
-                        f"|  Reason: {reason}"
+                        f"  {status_lbl} [{symbol}] {pct_label} EXIT on {str(current_date)[:10]} "
+                        f"@ {exit_price:,.2f}  |  P&L {pnl_pct:+.2f}%  "
+                        f"|  Reason: {exit_label}"
                     )
 
                 in_trade = False

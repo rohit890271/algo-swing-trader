@@ -388,7 +388,8 @@ def check_exit_signal(
     entry_date,
     stop_loss: float,
     target: float,
-    max_hold_days: int = 10,
+    max_hold_days: int = 7,
+    partial_taken: bool = False,
 ) -> str:
     """Evaluate the latest bar and return an exit reason string.
 
@@ -398,99 +399,90 @@ def check_exit_signal(
 
     Priority order:
 
-    1. ``"TARGET_HIT"``        – close ≥ *target*.
-    2. ``"STOP_LOSS"``         – close ≤ *stop_loss*.
-    3. ``"TIME_EXIT"``         – trading days since *entry_date*
-                                  ≥ *max_hold_days*.
-    4. ``"RSI_OVERBOUGHT"``    – RSI (14) crosses above 70.
-    5. ``"BEARISH_REVERSAL"``  – a bearish engulfing candle forms
+    1. ``"TARGET_HIT"``        -- close >= *target*.
+    2. ``"STOP_LOSS"``         -- close <= *stop_loss*.
+    3. ``"PARTIAL_EXIT_5PCT"`` -- profit >= 5 % and partial exit not
+                                  yet taken (*partial_taken* is False).
+    4. ``"TIME_EXIT"``         -- trading days since *entry_date*
+                                  >= *max_hold_days* (default 7).
+    5. ``"MOMENTUM_FADE"``     -- RSI (14) drops below 45 after entry
+                                  (momentum has faded).
+    6. ``"RSI_OVERBOUGHT"``    -- RSI (14) crosses above 70.
+    7. ``"BEARISH_REVERSAL"``  -- a bearish engulfing candle forms
                                   near a local resistance level
                                   (20-bar rolling high).
-    6. ``"HOLD"``              – none of the above.
-
-    The function computes EMA-20/50/200, RSI-14, and the bearish-
-    engulfing pattern internally, so it accepts a **raw** OHLCV
-    DataFrame.
+    8. ``"HOLD"``              -- none of the above.
 
     Args:
         df:             OHLCV ``pandas.DataFrame`` with a DatetimeIndex.
-                        Must contain columns: ``open``, ``high``,
-                        ``low``, ``close``, ``volume``.
         entry_price:    The price at which the position was opened.
         entry_date:     The date/timestamp the position was opened.
-                        Anything accepted by ``pd.Timestamp()``.
         stop_loss:      Absolute stop-loss price.
         target:         Absolute take-profit target price.
         max_hold_days:  Maximum number of **trading** (business) days
-                        to hold the position before a time-based exit
-                        (default ``10``).
+                        to hold the position (default ``7``).
+        partial_taken:  Whether a partial exit (50 %) has already been
+                        booked for this trade.  When ``False`` and
+                        profit >= 5 %, returns ``"PARTIAL_EXIT_5PCT"``.
 
     Returns:
         One of the following literal strings:
 
         * ``"TARGET_HIT"``
         * ``"STOP_LOSS"``
+        * ``"PARTIAL_EXIT_5PCT"``
         * ``"TIME_EXIT"``
+        * ``"MOMENTUM_FADE"``
         * ``"RSI_OVERBOUGHT"``
         * ``"BEARISH_REVERSAL"``
         * ``"HOLD"``
 
     Raises:
-        ValueError: If *df* has fewer than 2 rows (need previous bar
-                    for engulfing check and RSI cross detection).
-
-    Example::
-
-        >>> reason = check_exit_signal(
-        ...     ohlcv_df,
-        ...     entry_price=1020.0,
-        ...     entry_date="2024-03-01",
-        ...     stop_loss=989.40,
-        ...     target=1101.60,
-        ... )
-        >>> if reason != "HOLD":
-        ...     execute_exit(reason)
+        ValueError: If *df* has fewer than 2 rows.
     """
     from strategy.indicators import rsi as compute_rsi  # avoid circular import
 
     if len(df) < 2:
         raise ValueError(
-            f"DataFrame must have ≥ 2 rows for exit checks, got {len(df)}"
+            f"DataFrame must have >= 2 rows for exit checks, got {len(df)}"
         )
 
     latest = df.iloc[-1]
     prev   = df.iloc[-2]
     close  = latest["close"]
 
-    # ── 1. TARGET_HIT ────────────────────────
+    # -- 1. TARGET_HIT ------------------------
     if close >= target:
         return "TARGET_HIT"
 
-    # ── 2. STOP_LOSS ─────────────────────────
+    # -- 2. STOP_LOSS -------------------------
     if close <= stop_loss:
         return "STOP_LOSS"
 
-    # ── 3. TIME_EXIT ─────────────────────────
+    # -- 3. PARTIAL_EXIT_5PCT -----------------
+    current_pnl_pct = ((close - entry_price) / entry_price) * 100.0
+    if not partial_taken and current_pnl_pct >= 5.0:
+        return "PARTIAL_EXIT_5PCT"
+
+    # -- 4. TIME_EXIT -------------------------
     entry_ts  = pd.Timestamp(entry_date)
     latest_ts = pd.Timestamp(df.index[-1])
-    # Count only trading (business) days between entry and now
     trading_days = len(pd.bdate_range(start=entry_ts, end=latest_ts)) - 1
     if trading_days >= max_hold_days:
         return "TIME_EXIT"
 
-    # ── 4. RSI_OVERBOUGHT (cross above 70) ──
+    # -- 5. MOMENTUM_FADE (RSI < 45) ---------
     rsi_series = compute_rsi(df["close"], period=14)
     rsi_now  = rsi_series.iloc[-1]
     rsi_prev = rsi_series.iloc[-2]
+    if rsi_now < 45:
+        return "MOMENTUM_FADE"
+
+    # -- 6. RSI_OVERBOUGHT (cross above 70) --
     if rsi_now > 70 and rsi_prev <= 70:
         return "RSI_OVERBOUGHT"
 
-    # ── 5. BEARISH_REVERSAL ──────────────────
-    #    Bearish engulfing: today's open > prev close AND
-    #    today's close < prev open  (red candle fully engulfs
-    #    previous green body).
-    #    "At resistance" = close is within 1 % of the 20-bar
-    #    rolling high.
+    # -- 7. BEARISH_REVERSAL ------------------
     bearish_engulfing = (
         latest["open"] > prev["close"]
         and latest["close"] < prev["open"]
@@ -503,7 +495,7 @@ def check_exit_signal(
         if near_resistance:
             return "BEARISH_REVERSAL"
 
-    # ── 6. Nothing triggered ─────────────────
+    # -- 8. Nothing triggered -----------------
     return "HOLD"
 
 

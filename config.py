@@ -50,7 +50,7 @@ REWARD_RISK_RATIO: float = 2.0             # minimum R:R for a trade
 COMMISSION_PCT: float = 0.03               # brokerage + charges (%)
 SLIPPAGE_PCT: float = 0.05                 # estimated slippage (%)
 PAPER_TRADE: bool = True                   # True = no real orders placed
-MAX_HOLD_DAYS: int = 10                    # max trading days to hold a swing trade
+MAX_HOLD_DAYS: int = 7                    # max trading days to hold a swing trade
 
 # ──────────────────────────────────────────────
 # Watchlists (NSE symbols to scan)
