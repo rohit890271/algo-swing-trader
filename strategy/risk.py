@@ -19,6 +19,7 @@ from config import (
     POSITION_RISK_PCT,
     MAX_PORTFOLIO_RISK_PCT,
     MAX_OPEN_POSITIONS,
+    MAX_SECTOR_POSITIONS,
     ATR_STOP_MULTIPLIER,
     TRAILING_STOP_PCT,
     REWARD_RISK_RATIO,
@@ -415,6 +416,30 @@ def max_position_value(
         return 0.0
     max_exposure = capital * (MAX_PORTFOLIO_RISK_PCT / 100.0)
     return max_exposure / remaining_slots
+
+
+def can_open_new_position(
+    total_open_positions: int,
+    sector_open_positions: int,
+) -> bool:
+    """Determine if a new position is permitted under portfolio constraints.
+
+    Checks two constraints:
+      1. Overall open positions must be < MAX_OPEN_POSITIONS
+      2. Open positions in the same sector must be < MAX_SECTOR_POSITIONS
+
+    Args:
+        total_open_positions: Current total trade count.
+        sector_open_positions: Current trade count in the prospective stock's sector.
+
+    Returns:
+        True if the trade is permitted, False otherwise.
+    """
+    if total_open_positions >= MAX_OPEN_POSITIONS:
+        return False
+    if sector_open_positions >= MAX_SECTOR_POSITIONS:
+        return False
+    return True
 
 
 # ──────────────────────────────────────────────

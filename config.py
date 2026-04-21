@@ -11,8 +11,9 @@ source of truth.
 # Capital & Portfolio
 # ──────────────────────────────────────────────
 INITIAL_CAPITAL: float = 100000.0          # INR
-MAX_OPEN_POSITIONS: int = 2
-POSITION_RISK_PCT: float = 1.0             # risk 1 % of capital per trade
+MAX_OPEN_POSITIONS: int = 4                # max concurrent trades overall
+MAX_SECTOR_POSITIONS: int = 2              # max concurrent trades in the same sector
+POSITION_RISK_PCT: float = 0.75            # risk 0.75 % of capital per trade
 MAX_PORTFOLIO_RISK_PCT: float = 5.0        # max 5 % total portfolio risk
 
 # ──────────────────────────────────────────────
