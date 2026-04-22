@@ -80,8 +80,12 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | Non
     partial_taken = False       # tracks whether 50% partial exit done
     position_pct = 1.0          # 1.0 = full, 0.5 = half remaining
 
-    start_bar = 200  # skip first 200 bars for EMA-200 warm-up
+    # Pre-calculate all indicators to vectorize O(N^2) calculations
+    if "ema_20" not in df.columns:
+        from strategy.indicators import enrich_with_indicators
+        df = enrich_with_indicators(df)
 
+    start_bar = 50  # skip first 50 bars for short-term indicator warm-up
     for i in range(start_bar, len(df)):
         # Slice up to and including the current bar
         window = df.iloc[: i + 1]
@@ -99,9 +103,10 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | Non
                 entry_date = current_date
 
                 # ATR-based stop loss (1.5x ATR, clamped 1.5%-4%)
-                from strategy.indicators import atr as compute_atr_series
-                atr_series = compute_atr_series(window)
-                atr_val = atr_series.iloc[-1]
+                atr_val = current_bar.get("atr", 0.0)
+                if atr_val == 0.0:
+                    from strategy.indicators import atr as compute_atr_series
+                    atr_val = compute_atr_series(window).iloc[-1]
                 stop_loss = calculate_atr_stop_loss(entry_price, atr_value=atr_val)
 
                 target = calculate_target(entry_price, target_pct=0.08)

@@ -248,22 +248,12 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -
         >>> if result["signal"]:
         ...     print("Entry triggered:", result["reason"])
     """
-    from strategy.indicators import ema, rsi as compute_rsi, adx as compute_adx
-
-    # -- Ensure we have enough data -----------
-    if len(df) < 200:
-        return {
-            "signal": False,
-            "reason": "Insufficient data: need >= 200 bars for EMA-200 warm-up.",
-        }
-
-    # -- Compute indicators on a copy ---------
-    data = df.copy()
-    data["ema_20"]  = ema(data["close"], 20)
-    data["ema_50"]  = ema(data["close"], 50)
-    data["ema_200"] = ema(data["close"], 200)
-    data["rsi"]     = compute_rsi(data["close"], period=14)
-    data["adx"]     = compute_adx(data["high"], data["low"], data["close"], period=14)
+    # -- Compute or use pre-calculated indicators -
+    if "ema_20" not in df.columns:
+        from strategy.indicators import enrich_with_indicators
+        data = enrich_with_indicators(df)
+    else:
+        data = df
 
     # Latest bar values
     latest  = data.iloc[-1]
@@ -294,7 +284,7 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -
     )
 
     # -- Condition 3: Pullback 5-10% from 10-day high --
-    high_10d = data["high"].rolling(window=10).max().iloc[-1]
+    high_10d = latest["high_10d"]
     pullback_pct = ((high_10d - close) / high_10d) * 100.0
     cond3 = 5.0 <= pullback_pct <= 10.0
     reasons.append(
@@ -315,7 +305,7 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -
         vol_series.iloc[-4] > vol_series.iloc[-3]
         and vol_series.iloc[-3] > vol_series.iloc[-2]
     )
-    vol_avg_5 = vol_series.iloc[-6:-1].mean()   # 5-day avg *before* today
+    vol_avg_5 = latest["vol_avg_5d"]   # 5-day avg *before* today
     vol_expansion = volume > vol_avg_5
     cond5 = declining_vol and vol_expansion
     reasons.append(
@@ -333,10 +323,7 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -
 
     # -- Condition 7: Not in freefall (1-week return > -5%) --
     if len(data) >= 5:
-        week_return = (
-            (data["close"].iloc[-1] - data["close"].iloc[-5])
-            / data["close"].iloc[-5]
-        ) * 100.0
+        week_return = latest["return_1w_pct"]
         cond7 = week_return > -5.0
         reasons.append(
             f"{'[PASS]' if cond7 else '[FAIL]'} 1-week return {week_return:+.2f}% "
@@ -464,9 +451,15 @@ def check_exit_signal(
         return "TIME_EXIT"
 
     # -- 5. MOMENTUM_FADE (RSI < 45) ---------
-    rsi_series = compute_rsi(df["close"], period=14)
-    rsi_now  = rsi_series.iloc[-1]
-    rsi_prev = rsi_series.iloc[-2]
+    if "rsi" in df.columns:
+        rsi_now  = latest["rsi"]
+        rsi_prev = prev["rsi"]
+    else:
+        from strategy.indicators import rsi as compute_rsi
+        rsi_series = compute_rsi(df["close"], period=14)
+        rsi_now  = rsi_series.iloc[-1]
+        rsi_prev = rsi_series.iloc[-2]
+        
     if rsi_now < 45:
         return "MOMENTUM_FADE"
 
@@ -482,7 +475,11 @@ def check_exit_signal(
         and latest["close"] < latest["open"]  # today is bearish
     )
     if bearish_engulfing:
-        resistance = df["high"].rolling(window=20).max().iloc[-1]
+        if "high_20d" in df.columns:
+            resistance = latest["high_20d"]
+        else:
+            resistance = df["high"].rolling(window=20).max().iloc[-1]
+            
         near_resistance = (resistance - close) / resistance <= 0.01
         if near_resistance:
             return "BEARISH_REVERSAL"

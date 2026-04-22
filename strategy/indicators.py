@@ -288,23 +288,33 @@ def adx(
 # Convenience: attach ALL indicators at once
 # ──────────────────────────────────────────────
 
-def add_all_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute and attach every indicator used by the strategy.
-
-    This is a convenience wrapper that calls:
-    * :func:`add_ema_suite`
-    * :func:`add_rsi`
-    * :func:`add_atr`
-    * :func:`add_volume_analysis`
-
-    Args:
-        df: OHLCV DataFrame (columns: open, high, low, close, volume).
-
-    Returns:
-        The enriched DataFrame with all indicator columns appended.
+def enrich_with_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """Pre-calculate all indicators required by the strategy.
+    
+    This vectorizes the calculations across the entire dataframe to
+    avoid O(N^2) recalculations during the backtest loop and to 
+    preserve correct lookback history when slicing segments.
     """
-    df = add_ema_suite(df)
-    df = add_rsi(df)
-    df = add_atr(df)
-    df = add_volume_analysis(df)
+    df = df.copy()
+    
+    # 1. EMAs
+    df["ema_20"] = ema(df["close"], 20)
+    df["ema_50"] = ema(df["close"], 50)
+    df["ema_200"] = ema(df["close"], 200)
+    
+    # 2. Oscillators & Volatility
+    df["rsi"] = rsi(df["close"], 14)
+    df["adx"] = adx(df["high"], df["low"], df["close"], 14)
+    df["atr"] = atr(df)
+    
+    # 3. Rolling Highs & Returns
+    df["high_10d"] = df["high"].rolling(window=10).max()
+    df["high_20d"] = df["high"].rolling(window=20).max()
+    
+    # 1-week return (5 trading days)
+    df["return_1w_pct"] = df["close"].pct_change(periods=5) * 100.0
+    
+    # 4. Volume
+    df["vol_avg_5d"] = df["volume"].rolling(window=5).mean().shift(1)  # average of 5 days BEFORE today
+    
     return df
