@@ -45,6 +45,27 @@ TRAILING_STOP_PCT: float = 3.0             # 3 % trailing stop
 REWARD_RISK_RATIO: float = 2.0             # minimum R:R for a trade
 
 # ──────────────────────────────────────────────
+# Strategy Mode
+# ──────────────────────────────────────────────
+STRATEGY_MODE: str = "STRICT"  # "STRICT" or "RELAXED"
+
+# STRICT Mode Parameters (Current Settings)
+STRICT_RSI_MIN: float = 42.0
+STRICT_RSI_MAX: float = 60.0
+STRICT_PULLBACK_MIN: float = 5.0
+STRICT_PULLBACK_MAX: float = 10.0
+STRICT_ADX_MIN: float = 18.0
+STRICT_MIN_AVG_VOLUME: int = 300_000
+
+# RELAXED Mode Parameters (Easier Entry)
+RELAXED_RSI_MIN: float = 38.0
+RELAXED_RSI_MAX: float = 65.0
+RELAXED_PULLBACK_MIN: float = 3.0
+RELAXED_PULLBACK_MAX: float = 8.0
+RELAXED_ADX_MIN: float = 15.0
+RELAXED_MIN_AVG_VOLUME: int = 200_000
+
+# ──────────────────────────────────────────────
 # Backtest
 # ──────────────────────────────────────────────
 COMMISSION_PCT: float = 0.03               # brokerage + charges (%)
@@ -99,7 +120,7 @@ WATCHLIST: list = sorted(list(set(LARGECAP_100 + MIDCAP_50)))
 # ──────────────────────────────────────────────
 # Volume Filter
 # ──────────────────────────────────────────────
-MIN_AVG_VOLUME: int = 300_000              # skip stocks with 20-day avg vol < 300k
+MIN_AVG_VOLUME: int = 300_000              # skip stocks with 20-day avg vol < 300k (STRICT mode)
 
 
 # ──────────────────────────────────────────────

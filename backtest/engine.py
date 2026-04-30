@@ -28,6 +28,8 @@ from config import (
     MAX_HOLD_DAYS,
     POSITION_RISK_PCT,
     MIN_AVG_VOLUME,
+    STRICT_MIN_AVG_VOLUME,
+    RELAXED_MIN_AVG_VOLUME,
 )
 from broker.zerodha_api import get_ohlcv_free
 from strategy.signals import check_entry_signal, check_exit_signal
@@ -55,7 +57,7 @@ def _empty_trade_log() -> pd.DataFrame:
 # Core backtest loop for a single symbol
 # ──────────────────────────────────────────────
 
-def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -> pd.DataFrame:
+def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | None = None, strategy_mode: str = "STRICT") -> pd.DataFrame:
     """Run a day-by-day backtest on one symbol.
 
     Starts from bar index 200 (so all indicators have warmed up) and
@@ -67,6 +69,7 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | Non
         symbol:   NSE ticker name.
         df:       OHLCV DataFrame (>= 250 rows) with a DatetimeIndex.
         nifty_df: Optional Nifty 50 benchmark DataFrame for RS calc.
+        strategy_mode: "STRICT" or "RELAXED" - determines entry criteria.
 
     Returns:
         A ``pandas.DataFrame`` of completed trades for this symbol.
@@ -97,7 +100,7 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | Non
             nifty_window = None
             if nifty_df is not None:
                 nifty_window = nifty_df.loc[nifty_df.index <= current_date]
-            result = check_entry_signal(window, nifty_df=nifty_window)
+            result = check_entry_signal(window, nifty_df=nifty_window, strategy_mode=strategy_mode)
             if result["signal"]:
                 entry_price = current_bar["close"]
                 entry_date = current_date
@@ -199,12 +202,15 @@ def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | Non
 def _compute_summary(trade_log: pd.DataFrame, capital: float) -> dict:
     """Compute aggregate performance metrics from a trade log.
 
+    Uses capital-based simulation so partial exits (two rows for one trade)
+    are handled correctly and returns aren't artificially compounded.
+
     Args:
         trade_log: DataFrame of completed trades (needs ``pnl_pct``).
         capital:   Starting capital (used for total return calc).
 
     Returns:
-        A dict of summary statistics.
+        A dict of summary statistics including profit_factor.
     """
     if trade_log.empty:
         return {
@@ -214,25 +220,40 @@ def _compute_summary(trade_log: pd.DataFrame, capital: float) -> dict:
             "win_rate_pct": 0.0,
             "avg_profit_pct": 0.0,
             "avg_loss_pct": 0.0,
+            "profit_factor": 0.0,
             "max_drawdown_pct": 0.0,
             "total_return_pct": 0.0,
         }
 
     total = len(trade_log)
     winners = trade_log[trade_log["pnl_pct"] > 0]
-    losers = trade_log[trade_log["pnl_pct"] <= 0]
+    losers  = trade_log[trade_log["pnl_pct"] <= 0]
 
-    win_rate = (len(winners) / total) * 100.0 if total else 0.0
+    win_rate   = (len(winners) / total) * 100.0 if total else 0.0
     avg_profit = winners["pnl_pct"].mean() if len(winners) else 0.0
-    avg_loss = losers["pnl_pct"].mean() if len(losers) else 0.0
+    avg_loss   = losers["pnl_pct"].mean()  if len(losers)  else 0.0
 
-    # Approximate max drawdown from cumulative P&L
-    cumulative = (1 + trade_log["pnl_pct"] / 100.0).cumprod()
-    running_max = cumulative.cummax()
-    drawdown = ((cumulative - running_max) / running_max) * 100.0
-    max_dd = abs(drawdown.min()) if len(drawdown) else 0.0
+    # Profit Factor = gross profit / gross loss (avoids cumprod inflation)
+    gross_profit = winners["pnl_pct"].sum()
+    gross_loss   = abs(losers["pnl_pct"].sum())
+    profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else float("inf")
 
-    total_return = (cumulative.iloc[-1] - 1) * 100.0 if len(cumulative) else 0.0
+    # Simulate equity curve: each trade risks a fixed fraction of current equity.
+    # Use 1 % risk per trade as a conservative per-trade stake for simulation.
+    RISK_PER_TRADE = 0.01
+    equity = capital
+    equity_curve = [capital]
+    for pnl in trade_log["pnl_pct"]:
+        # pnl is percentage return on the *position*, position = RISK_PER_TRADE * equity
+        equity += equity * RISK_PER_TRADE * (pnl / 100.0)
+        equity_curve.append(equity)
+
+    equity_series = pd.Series(equity_curve)
+    running_max   = equity_series.cummax()
+    drawdown_pct  = ((equity_series - running_max) / running_max) * 100.0
+    max_dd        = abs(drawdown_pct.min())
+
+    total_return = ((equity - capital) / capital) * 100.0
 
     return {
         "total_trades": total,
@@ -241,6 +262,7 @@ def _compute_summary(trade_log: pd.DataFrame, capital: float) -> dict:
         "win_rate_pct": round(win_rate, 2),
         "avg_profit_pct": round(avg_profit, 2),
         "avg_loss_pct": round(avg_loss, 2),
+        "profit_factor": profit_factor,
         "max_drawdown_pct": round(max_dd, 2),
         "total_return_pct": round(total_return, 2),
     }
@@ -261,6 +283,9 @@ def _print_summary(summary: dict) -> None:
     print(f"  Win Rate          : {summary['win_rate_pct']:.2f}%")
     print(f"  Avg Profit (win)  : {summary['avg_profit_pct']:+.2f}%")
     print(f"  Avg Loss (loss)   : {summary['avg_loss_pct']:+.2f}%")
+    pf = summary.get('profit_factor', 0)
+    pf_str = f"{pf:.2f}" if pf != float('inf') else "inf"
+    print(f"  Profit Factor     : {pf_str}")
     print(f"  Max Drawdown      : {summary['max_drawdown_pct']:.2f}%")
     print(f"  Total Return      : {summary['total_return_pct']:+.2f}%")
     print("=" * 55)
@@ -275,6 +300,7 @@ def run_backtest(
     days: int = 1200,
     save_csv: bool = True,
     csv_path: str = "trades_log.csv",
+    strategy_mode: str = "STRICT",
 ) -> dict:
     """Run the full backtest across every symbol in the watchlist.
 
@@ -289,6 +315,7 @@ def run_backtest(
         days:      Number of calendar days of history to fetch.
         save_csv:  Whether to save the trade log to a CSV file.
         csv_path:  Path for the output CSV (default ``trades_log.csv``).
+        strategy_mode: "STRICT" or "RELAXED" - determines entry criteria.
 
     Returns:
         A dict with keys:
@@ -302,6 +329,7 @@ def run_backtest(
     print("=" * 55)
     print("  [SWING TRADING BACKTEST ENGINE]")
     print(f"  Mode : {'PAPER TRADE' if PAPER_TRADE else 'LIVE (caution!)'}")
+    print(f"  Strategy Mode : {strategy_mode}")
     print(f"  Symbols : {len(watchlist)} stocks")
     print(f"  History : {days} days")
     print("=" * 55)
@@ -341,15 +369,16 @@ def run_backtest(
             continue
 
         # ── Volume liquidity filter ──────────
+        min_volume = STRICT_MIN_AVG_VOLUME if strategy_mode == "STRICT" else RELAXED_MIN_AVG_VOLUME
         avg_vol_20 = df["volume"].tail(20).mean()
-        if avg_vol_20 < MIN_AVG_VOLUME:
+        if avg_vol_20 < min_volume:
             print(
                 f"  [!] {symbol} avg 20-day volume = {avg_vol_20:,.0f} "
-                f"< {MIN_AVG_VOLUME:,}. Skipping."
+                f"< {min_volume:,}. Skipping."
             )
             continue
 
-        symbol_trades = _backtest_symbol(symbol, df, nifty_df=nifty_df)
+        symbol_trades = _backtest_symbol(symbol, df, nifty_df=nifty_df, strategy_mode=strategy_mode)
 
         if symbol_trades.empty:
             print(f"  [-] No trades generated for {symbol}.")

@@ -30,6 +30,9 @@ from config import (
     MAX_OPEN_POSITIONS,
     POSITION_RISK_PCT,
     MAX_HOLD_DAYS,
+    STRATEGY_MODE,
+    STRICT_MIN_AVG_VOLUME,
+    RELAXED_MIN_AVG_VOLUME,
 )
 from broker.zerodha_api import get_ohlcv_free
 from strategy.indicators import enrich_with_indicators
@@ -100,6 +103,7 @@ def run_daily_job():
 
     today_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     print(f"\n[{today_str}] Waking up paper trading engine...")
+    print(f"Strategy Mode: {STRATEGY_MODE}")
 
     positions = load_open_positions()
     
@@ -121,6 +125,13 @@ def run_daily_job():
             df = get_ohlcv_free(symbol, days=365)
             if df.empty or len(df) < 50:
                 return None
+
+            # Apply volume filter based on strategy mode
+            min_volume = STRICT_MIN_AVG_VOLUME if STRATEGY_MODE == "STRICT" else RELAXED_MIN_AVG_VOLUME
+            avg_vol_20 = df["volume"].tail(20).mean()
+            if avg_vol_20 < min_volume:
+                return None
+
             df = enrich_with_indicators(df)
             stock_cache[symbol] = df
             return df
@@ -203,7 +214,7 @@ def run_daily_job():
         if df is None:
             continue
             
-        result = check_entry_signal(df, nifty_df=nifty_df)
+        result = check_entry_signal(df, nifty_df=nifty_df, strategy_mode=STRATEGY_MODE)
         
         latest_close = float(df["close"].iloc[-1])
         latest_rsi = float(df.get("rsi", pd.Series([0])).iloc[-1])
@@ -339,7 +350,7 @@ def run_daily_job():
     failed_scans.sort(key=lambda x: x["pass_count"], reverse=True)
     
     for row in failed_scans[:5]:
-        print(f"   {row['symbol'].ljust(8)} — Failed: {row['signal']} {row['fail_detail']}")
+        print(f"   {row['symbol'].ljust(8)} - Failed: {row['signal']} {row['fail_detail']}")
     
     print(f"   =======================================\n")
 

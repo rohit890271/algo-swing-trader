@@ -23,6 +23,19 @@ from config import (
     RSI_OVERSOLD,
     RSI_OVERBOUGHT,
     REWARD_RISK_RATIO,
+    STRATEGY_MODE,
+    STRICT_RSI_MIN,
+    STRICT_RSI_MAX,
+    STRICT_PULLBACK_MIN,
+    STRICT_PULLBACK_MAX,
+    STRICT_ADX_MIN,
+    STRICT_MIN_AVG_VOLUME,
+    RELAXED_RSI_MIN,
+    RELAXED_RSI_MAX,
+    RELAXED_PULLBACK_MIN,
+    RELAXED_PULLBACK_MAX,
+    RELAXED_ADX_MIN,
+    RELAXED_MIN_AVG_VOLUME,
 )
 
 
@@ -204,36 +217,48 @@ def generate_exit_signal(
 # Pullback entry screener (single-bar verdict)
 # ──────────────────────────────────────────────
 
-def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -> dict:
-    """Evaluate the *latest bar* of an OHLCV DataFrame against a strict
-    set of swing-trade entry conditions.
+def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None, strategy_mode: str = "STRICT") -> dict:
+    """Evaluate the *latest bar* of an OHLCV DataFrame against a set of
+    swing-trade entry conditions.
 
     The function computes all required indicators internally, so the
     caller may pass a **raw** OHLCV DataFrame (columns: ``open``,
     ``high``, ``low``, ``close``, ``volume``).
 
-    **All ten conditions must be True for a BUY signal:**
+    **Entry conditions vary by strategy mode:**
 
+    **STRICT Mode (default):**
+    All 9 conditions must be True for a BUY signal:
     1. Close is above both EMA-50 and EMA-200 (uptrend).
     2. EMA-20 is above EMA-50 (short-term momentum).
-    3. Price has pulled back 5-10 % from the rolling 10-day high.
-    4. RSI (14) is between 45 and 58 (not overbought, not oversold).
+    3. Price has pulled back 5-10% from the rolling 10-day high.
+    4. RSI (14) is between 42 and 60 (not overbought, not oversold).
     5. The last 3 candles show declining volume **and** today's volume
        is above its own 5-day average (volume dry-up then expansion).
     6. Today's candle is bullish (close > open).
-    7. Relative Strength vs Nifty 50 over 20 days > 0
-       (stock outperforming the benchmark).
-    8. Price must have pulled back for at least 2 consecutive days
-       (close < prev close for 2 days before today).
-    9. ADX (14) > 20 (confirms a trending market, not sideways).
-    10. (Reserved for future use.)
+    7. Not in freefall (1-week return > -5%).
+    8. At least 1 pullback day before today.
+    9. ADX (14) > 18 (confirms a trending market, not sideways).
+
+    **RELAXED Mode:**
+    All 8 conditions must be True for a BUY signal:
+    1. Close is above EMA-50 (uptrend - EMA-200 requirement removed).
+    2. EMA-20 is above EMA-50 (short-term momentum).
+    3. Price has pulled back 3-8% from the rolling 10-day high.
+    4. RSI (14) is between 38 and 65 (wider range).
+    5. The last 3 candles show declining volume **and** today's volume
+       is above its own 5-day average (volume dry-up then expansion).
+    6. Today's candle is bullish (close > open).
+    7. Not in freefall (1-week return > -5%).
+    8. At least 1 pullback day before today.
+    9. ADX (14) > 15 (easier trend requirement).
 
     Args:
         df:       OHLCV ``pandas.DataFrame`` with a DatetimeIndex.  Must
                   contain at least 200 rows for the slowest EMA to warm up.
         nifty_df: Optional OHLCV DataFrame for the Nifty 50 index
-                  (``^NSEI``).  If ``None``, the relative-strength
-                  check is skipped (treated as passed).
+                  (``^NSEI``).  Currently unused but kept for compatibility.
+        strategy_mode: "STRICT" or "RELAXED" - determines entry criteria.
 
     Returns:
         A dict with two keys:
@@ -244,10 +269,26 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -
 
     Example::
 
-        >>> result = check_entry_signal(ohlcv_df, nifty_df)
+        >>> result = check_entry_signal(ohlcv_df, nifty_df, "RELAXED")
         >>> if result["signal"]:
         ...     print("Entry triggered:", result["reason"])
     """
+    # -- Set parameters based on strategy mode --
+    if strategy_mode == "RELAXED":
+        rsi_min = RELAXED_RSI_MIN
+        rsi_max = RELAXED_RSI_MAX
+        pullback_min = RELAXED_PULLBACK_MIN
+        pullback_max = RELAXED_PULLBACK_MAX
+        adx_min = RELAXED_ADX_MIN
+        require_ema200 = False
+    else:  # STRICT mode (default)
+        rsi_min = STRICT_RSI_MIN
+        rsi_max = STRICT_RSI_MAX
+        pullback_min = STRICT_PULLBACK_MIN
+        pullback_max = STRICT_PULLBACK_MAX
+        adx_min = STRICT_ADX_MIN
+        require_ema200 = True
+
     # -- Compute or use pre-calculated indicators -
     if "ema_20" not in df.columns:
         from strategy.indicators import enrich_with_indicators
@@ -268,13 +309,20 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -
 
     reasons: list[str] = []
 
-    # -- Condition 1: Close > EMA-50 AND Close > EMA-200 --
-    cond1 = (close > ema50) and (close > ema200)
-    reasons.append(
-        f"{'[PASS]' if cond1 else '[FAIL]'} Close ({close:.2f}) "
-        f"{'above' if cond1 else 'NOT above'} EMA-50 ({ema50:.2f}) "
-        f"& EMA-200 ({ema200:.2f})"
-    )
+    # -- Condition 1: Close > EMA-50 (and EMA-200 in STRICT mode) --
+    cond1 = close > ema50
+    if require_ema200:
+        cond1 = cond1 and (close > ema200)
+        reasons.append(
+            f"{'[PASS]' if cond1 else '[FAIL]'} Close ({close:.2f}) "
+            f"{'above' if cond1 else 'NOT above'} EMA-50 ({ema50:.2f}) "
+            f"& EMA-200 ({ema200:.2f})"
+        )
+    else:
+        reasons.append(
+            f"{'[PASS]' if cond1 else '[FAIL]'} Close ({close:.2f}) "
+            f"{'above' if cond1 else 'NOT above'} EMA-50 ({ema50:.2f})"
+        )
 
     # -- Condition 2: EMA-20 > EMA-50 --------
     cond2 = ema20 > ema50
@@ -283,20 +331,20 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -
         f"{'above' if cond2 else 'NOT above'} EMA-50 ({ema50:.2f})"
     )
 
-    # -- Condition 3: Pullback 5-10% from 10-day high --
+    # -- Condition 3: Pullback range (varies by mode) --
     high_10d = latest["high_10d"]
     pullback_pct = ((high_10d - close) / high_10d) * 100.0
-    cond3 = 5.0 <= pullback_pct <= 10.0
+    cond3 = pullback_min <= pullback_pct <= pullback_max
     reasons.append(
         f"{'[PASS]' if cond3 else '[FAIL]'} Pullback {pullback_pct:.2f}% from "
-        f"10-day high ({high_10d:.2f}) -- need 5-10%"
+        f"10-day high ({high_10d:.2f}) -- need {pullback_min}-{pullback_max}%"
     )
 
-    # -- Condition 4: RSI between 42 and 60 --
-    cond4 = 42.0 <= rsi_val <= 60.0
+    # -- Condition 4: RSI range (varies by mode) --
+    cond4 = rsi_min <= rsi_val <= rsi_max
     reasons.append(
         f"{'[PASS]' if cond4 else '[FAIL]'} RSI ({rsi_val:.2f}) "
-        f"{'inside' if cond4 else 'outside'} 42-60 range"
+        f"{'inside' if cond4 else 'outside'} {rsi_min}-{rsi_max} range"
     )
 
     # -- Condition 5: Last 3 candles declining volume + today > 5-day avg --
@@ -340,16 +388,16 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None) -
         f"before entry candle"
     )
 
-    # -- Condition 9: ADX(14) > 18 (trending) --
-    cond9 = adx_val > 18.0
+    # -- Condition 9: ADX threshold (varies by mode) --
+    cond9 = adx_val > adx_min
     reasons.append(
         f"{'[PASS]' if cond9 else '[FAIL]'} ADX ({adx_val:.2f}) "
-        f"{'>' if cond9 else '<='} 18 -- {'trending' if cond9 else 'sideways'}"
+        f"{'>' if cond9 else '<='} {adx_min} -- {'trending' if cond9 else 'sideways'}"
     )
 
     # -- Composite verdict --------------------
     signal = all([cond1, cond2, cond3, cond4, cond5, cond6, cond7, cond8, cond9])
-    summary = "ALL CONDITIONS MET - ENTRY" if signal else "Entry conditions NOT met"
+    summary = f"ALL CONDITIONS MET - ENTRY ({strategy_mode} MODE)" if signal else f"Entry conditions NOT met ({strategy_mode} MODE)"
 
     return {
         "signal": signal,
