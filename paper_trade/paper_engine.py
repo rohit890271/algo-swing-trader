@@ -235,40 +235,69 @@ def run_daily_job():
             signal_label = "FAIL_UNKNOWN"
             fail_detail = ""
             pass_count = 0
-            
-            for line in result["reason"].split("\n"):
-                if "[PASS]" in line:
+
+            # Split reason text into individual segments.
+            # The volume condition emits "[FAIL] ... | [PASS] ..." on ONE line
+            # separated by " | ", so we must split on pipe before checking tags.
+            segments: list[str] = []
+            for raw_line in result["reason"].split("\n"):
+                segments.extend(raw_line.split(" | "))
+
+            for seg in segments:
+                seg = seg.strip()
+                if "[PASS]" in seg:
                     pass_count += 1
-                elif "[FAIL]" in line and signal_label == "FAIL_UNKNOWN":
-                    if "EMA-50 & EMA-200" in line:
+                elif "[FAIL]" in seg and signal_label == "FAIL_UNKNOWN":
+                    # Trend: price vs EMA-50 (no EMA-20 involvement)
+                    if "EMA-50" in seg and "EMA-20" not in seg:
                         signal_label = "FAIL_TREND"
-                        fail_detail = "(Below EMAs)"
-                    elif "EMA-20" in line and "EMA-50" in line:
+                        fail_detail = "(Price below EMA)"
+                    # Momentum: EMA-20 not above EMA-50
+                    elif "EMA-20" in seg and "EMA-50" in seg:
                         signal_label = "FAIL_MOMENTUM"
                         fail_detail = "(Fast EMA < Med EMA)"
-                    elif "Pullback" in line:
+                    # Pullback range
+                    elif "Pullback" in seg:
                         signal_label = "FAIL_PULLBACK"
-                        match = re.search(r"Pullback ([-0-9.]+)%", line)
-                        pct = match.group(1) if match else "0"
-                        fail_detail = f"(only {pct}%, need 5%)"
-                    elif "RSI" in line:
+                        match = re.search(r"Pullback ([\d.]+)%", seg)
+                        need_match = re.search(r"need ([\d.]+-[\d.]+)%", seg)
+                        pct  = match.group(1)      if match      else "0"
+                        need = need_match.group(1) if need_match else "?"
+                        fail_detail = f"(only {pct}%, need {need}%)"
+                    # RSI outside allowed range
+                    elif "RSI" in seg and "range" in seg:
                         signal_label = "FAIL_RSI"
-                        fail_detail = f"(RSI={latest_rsi:.0f}, need 42+)"
-                    elif "volume" in line or "Today vol" in line:
+                        need_match = re.search(r"([\d.]+-[\d.]+) range", seg)
+                        need = need_match.group(1) if need_match else "?"
+                        fail_detail = f"(RSI={latest_rsi:.0f}, need {need})"
+                    # Volume: declining vol dry-up OR today < 5-day avg
+                    elif "declining volume" in seg or "Today vol" in seg:
                         signal_label = "FAIL_VOLUME"
-                        fail_detail = "(Volume rules failed)"
-                    elif "Bullish candle" in line:
+                        if "Today vol" in seg:
+                            fail_detail = "(Today vol < 5-day avg)"
+                        else:
+                            fail_detail = "(Vol dry-up not confirmed)"
+                    # Bearish candle
+                    elif "Bullish candle" in seg or "candle" in seg.lower():
                         signal_label = "FAIL_CANDLE"
-                        fail_detail = "(Bearish today)"
-                    elif "1-week return" in line:
-                        signal_label = "FAIL_MOMENTUM"
+                        fail_detail = "(Bearish candle today)"
+                    # Freefall / 1-week return
+                    elif "1-week return" in seg:
+                        signal_label = "FAIL_FREEFALL"
                         fail_detail = "(Weekly return < -5%)"
-                    elif "1 pullback day" in line:
+                    # No pullback day before entry
+                    elif "pullback day" in seg:
                         signal_label = "FAIL_SETUP"
                         fail_detail = "(No pullback yesterday)"
-                    elif "ADX" in line:
+                    # ADX below threshold
+                    elif "ADX" in seg:
                         signal_label = "FAIL_ADX"
-                        fail_detail = f"(ADX={latest_adx:.0f}, need 18+)"
+                        need_match = re.search(r"<= ([\d.]+)", seg)
+                        need = need_match.group(1) if need_match else "?"
+                        fail_detail = f"(ADX={latest_adx:.0f}, need >{need})"
+
+
+
 
         scan_results.append({
             "date": str(df.index[-1].date()),

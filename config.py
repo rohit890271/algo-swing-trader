@@ -47,7 +47,7 @@ REWARD_RISK_RATIO: float = 2.0             # minimum R:R for a trade
 # ──────────────────────────────────────────────
 # Strategy Mode
 # ──────────────────────────────────────────────
-STRATEGY_MODE: str = "STRICT"  # "STRICT" or "RELAXED"
+STRATEGY_MODE: str = "RELAXED"  # "STRICT" or "RELAXED"
 
 # STRICT Mode Parameters (Current Settings)
 STRICT_RSI_MIN: float = 42.0
