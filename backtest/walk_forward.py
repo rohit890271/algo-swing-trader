@@ -47,9 +47,17 @@ def evaluate_segments(in_sample_pf: float, oos_pfs: list[float],
             "failed_segments": failed}
 
 
-def _segment_pf(data_slice: dict) -> float:
+def _segment_pf(data_slice: dict, entry_decision=None, exit_decision=None,
+                warmup: int = 0) -> float:
+    """Profit factor of one segment.
+
+    ``warmup`` defaults to 0 because the data is already enriched (indicators
+    warmed on the full history) before slicing; rows whose indicators are still
+    NaN simply produce no entry signal, so no per-slice warm-up gate is needed.
+    """
     sim = simulate(data_slice, start_capital=INITIAL_CAPITAL, strategy_mode=STRATEGY_MODE,
-                   max_positions=MAX_OPEN_POSITIONS, risk_pct=POSITION_RISK_PCT)
+                   max_positions=MAX_OPEN_POSITIONS, risk_pct=POSITION_RISK_PCT,
+                   warmup=warmup, entry_decision=entry_decision, exit_decision=exit_decision)
     m = metrics_mod.compute_metrics(sim["trade_log"], sim["equity_curve"],
                                     sim["positions_count"], INITIAL_CAPITAL)
     pf = m["profit_factor"]
@@ -84,6 +92,9 @@ def run(watchlist: list[str] | None = None, days: int = 1200,
         segment_pfs.append(pf)
         label = "IN-SAMPLE" if seg_i == 0 else f"OOS #{seg_i}"
         print(f"  Segment {seg_i} [{label}] rows {start}:{end} -> profit factor {pf:.2f}")
+        if (end - start) < 250:
+            print(f"    [!] Segment {seg_i} has only {end - start} rows — too few bars; "
+                  f"this segment's verdict may be unreliable.")
 
     verdict = evaluate_segments(segment_pfs[0], segment_pfs[1:])
     print("\n  " + ("[PASS] Strategy holds out-of-sample." if verdict["passed"]
