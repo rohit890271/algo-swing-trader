@@ -36,6 +36,29 @@ TRADE_COLUMNS = [
     "qty", "gross_pnl", "cost", "net_pnl", "net_pnl_pct", "exit_reason",
 ]
 
+DISCRETIONARY_EXITS = {"MOMENTUM_FADE", "RSI_OVERBOUGHT", "BEARISH_REVERSAL", "TIME_EXIT"}
+
+
+def _close_position(positions: dict, trades: list, sym: str, exit_price: float,
+                    exit_date, reason: str, side_cost: float) -> float:
+    """Book a full exit, append a trade row, and return cash to add back."""
+    pos = positions.pop(sym)
+    qty = pos["qty"]
+    gross = qty * (exit_price - pos["entry_price"])
+    exit_cost = exit_price * qty * side_cost
+    cost = pos["entry_cost"] + exit_cost
+    net = gross - cost
+    notional = pos["entry_price"] * qty
+    trades.append({
+        "symbol": sym, "entry_date": pos["entry_date"], "exit_date": exit_date,
+        "entry_price": round(pos["entry_price"], 2), "exit_price": round(exit_price, 2),
+        "qty": qty, "gross_pnl": round(gross, 2), "cost": round(cost, 2),
+        "net_pnl": round(net, 2),
+        "net_pnl_pct": round(net / notional * 100.0, 2) if notional else 0.0,
+        "exit_reason": reason,
+    })
+    return (exit_price * qty) - exit_cost
+
 
 def _default_entry_decision(window: pd.DataFrame, mode: str) -> bool:
     return check_entry_signal(window, strategy_mode=mode)["signal"]
@@ -78,6 +101,7 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
     positions: dict[str, dict] = {}
     trades: list[dict] = []
     pending_entries: list[str] = []
+    pending_exits: list[tuple[str, str]] = []
     equity_records: dict = {}
     count_records: dict = {}
     debug_last_entry_price = None
@@ -91,6 +115,17 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
         return eq
 
     for date in all_dates:
+        # ---- Phase 1a: fill queued discretionary exits at TODAY's open ----
+        for sym, reason in pending_exits:
+            if sym not in positions:
+                continue
+            df = price_data[sym]
+            if date not in df.index:
+                continue
+            cash += _close_position(positions, trades, sym, float(df.loc[date, "open"]),
+                                    date, reason, side_cost)
+        pending_exits = []
+
         # ---- Phase 1: fill queued entries at TODAY's open ----
         for sym in pending_entries:
             if sym in positions or len(positions) >= max_positions:
@@ -124,6 +159,20 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
             debug_last_entry_price = entry_price
         pending_entries = []
 
+        # ---- Phase 2: intrabar stop/target on TODAY's bar ----
+        for sym in list(positions):
+            df = price_data[sym]
+            if date not in df.index:
+                continue
+            bar = df.loc[date]
+            pos = positions[sym]
+            if bar["low"] <= pos["stop_loss"]:
+                fill = min(float(bar["open"]), pos["stop_loss"])   # gap down -> open
+                cash += _close_position(positions, trades, sym, fill, date, "STOP_LOSS", side_cost)
+            elif bar["high"] >= pos["target"]:
+                fill = max(float(bar["open"]), pos["target"])      # gap up -> open
+                cash += _close_position(positions, trades, sym, fill, date, "TARGET_HIT", side_cost)
+
         # ---- Phase 3: evaluate signals on TODAY's close, queue for next open ----
         if len(positions) < max_positions:
             candidates = []
@@ -138,6 +187,15 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
             candidates.sort(key=lambda x: x[1], reverse=True)
             slots = max_positions - len(positions)
             pending_entries = [s for s, _ in candidates[:slots]]
+
+        # ---- Phase 3b: discretionary exit signals -> queue for next open ----
+        for sym, pos in list(positions.items()):
+            window = price_data[sym].loc[:date]
+            if window.index[-1] != date:
+                continue
+            reason = exit_decision(window, pos, MAX_HOLD_DAYS)
+            if reason in DISCRETIONARY_EXITS:
+                pending_exits.append((sym, reason))
 
         equity_records[date] = current_equity(date)
         count_records[date] = len(positions)
