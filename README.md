@@ -51,10 +51,16 @@ Run the automated scheduler to scan the market every day at 09:20 AM IST. It wil
 python paper_trade/paper_engine.py
 ```
 
-### 2. Historical Backtesting
-Run the engine on 3+ years of historical data to evaluate performance metrics.
+### 2. Historical Backtesting (portfolio-level)
+Runs a single shared-capital account across the whole watchlist, respecting the
+max concurrent position cap, filling entries at the next day's open, and charging
+commission + slippage. Prints the baseline tear-sheet (and a survivorship-haircut copy).
 ```bash
-python backtest/engine.py
+python main.py
+```
+For the out-of-sample robustness check:
+```bash
+python -m backtest.walk_forward
 ```
 To run both modes side-by-side and view a comparative breakdown:
 ```bash

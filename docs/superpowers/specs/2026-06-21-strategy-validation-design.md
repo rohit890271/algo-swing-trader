@@ -1,7 +1,7 @@
 # Pre-Deployment Strategy Program — Design Spec
 
 **Date:** 2026-06-21
-**Status:** Approved (design); Phase 1 specced in full
+**Status:** Phase 1 implemented; Phases 2–3 pending
 **Author:** brainstormed with Claude
 
 ## Context

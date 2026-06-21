@@ -13,15 +13,17 @@ python -m venv .venv && .\.venv\Scripts\activate
 pip install ta_lib-0.6.8-cp313-cp313-win_amd64.whl   # bundled wheel, TA-Lib is a hard dep
 pip install -r requirements.txt
 
-# Historical backtest (STRICT mode by default) -> trades_log.csv
+# Historical backtest: portfolio-level, shared capital, cost-aware -> tear-sheet
 python main.py
-python backtest/engine.py
 
-# Compare STRICT vs RELAXED side-by-side
+# Compare STRICT vs RELAXED side-by-side (legacy per-symbol engine)
 python compare_modes.py
 
-# Walk-forward (curve-fit / overfitting check, 3 segments of last 365 days)
+# Walk-forward (strict non-overlapping 3-segment OOS check over the portfolio engine)
 python -m backtest.walk_forward
+
+# Run the full test suite
+.venv/Scripts/python.exe -m pytest -q
 
 # Daily paper-trade scan: runs once immediately, then schedules 09:20 IST daily
 python paper_trade/paper_engine.py
@@ -30,8 +32,9 @@ python paper_trade/paper_engine.py
 python analyze_results.py
 ```
 
-There is **no test suite, linter config, or CI**. Verification today is manual: run a backtest
-and read the printed summary.
+There is a pytest suite under `tests/` (no linter config or CI). Run it with
+`.venv/Scripts/python.exe -m pytest -q`. Beyond that, verification is manual: run a backtest
+and read the printed tear-sheet.
 
 ## Architecture
 
@@ -50,9 +53,14 @@ Data flow: `yfinance OHLCV -> enrich_with_indicators -> check_entry_signal/check
   The function actually used everywhere is `get_ohlcv_free(symbol, days)`, which pulls free NSE data
   from Yahoo Finance (auto-appends `.NS`).
 - **backtest/engine.py** — `run_backtest()` loops each symbol day-by-day from bar 50, calling the
-  same entry/exit functions the paper engine uses. `_compute_summary()` builds the metrics.
-- **backtest/walk_forward.py** — splits the last 365 days into 3 segments to check the edge holds
-  out-of-sample.
+  same entry/exit functions the paper engine uses. `_compute_summary()` builds the metrics. No
+  longer wired into `main.py` (kept for reference); superseded by the portfolio engine below.
+- **backtest/portfolio_engine.py** — pure date-driven portfolio simulator (shared capital,
+  position cap, next-open fills, intrabar stop/target, costs). Injectable entry/exit fns.
+- **backtest/costs.py / metrics.py** — trading-cost model and equity-curve metrics + tear-sheet.
+- **backtest/run_portfolio.py** — thin runner (network I/O lives here); `main.py` calls it.
+- **backtest/walk_forward.py** — strict non-overlapping 3-segment split over the portfolio engine;
+  flags out-of-sample profit-factor degradation vs. `OOS_MIN_PF_RATIO`.
 - **paper_trade/paper_engine.py** — daily live scan. Loads open positions from
   `paper_trades/open_positions.json`, checks exits, scans the full watchlist for entries, writes
   `paper_trades/daily_scan_log.csv` (one row per stock per scan with pass/fail reason) and
@@ -85,10 +93,14 @@ The original entry-signal duplication, stop-loss doc drift, mode-default mismatc
 - **Stop-loss** uses `calculate_atr_stop_loss()` (1.5× ATR, clamped 1.5%–4%). The older
   `atr_stop_loss()` (2× ATR) and `build_trade_risk()` in risk.py are **not on the live path** —
   the `ATR_STOP_MULTIPLIER = 2.0` constant only feeds those unused helpers.
-- **Paper engine has no capital persistence.** Position sizing always uses `INITIAL_CAPITAL`; the
-  dashboard "Total P&L" is per-run only, not a running equity curve. Sector limits
-  (`MAX_SECTOR_POSITIONS`, `can_open_new_position`) are defined but **not wired in** — no sector map.
-  (Open item for pre-deployment.)
+- **The backtest now models shared capital (portfolio-level).** `backtest/portfolio_engine.py`
+  trades one capital account across the whole universe with a max concurrent position cap,
+  next-open fills, and costs — it no longer pretends each symbol has its own unlimited capital.
+- **Forward-test equity persists.** The paper engine now carries a running equity figure across
+  daily runs (`load_portfolio_state`/`save_portfolio_state`/`apply_realized_pnl` in
+  `paper_trade/paper_engine.py`), stored at `paper_trades/portfolio_state.json`. Sector limits
+  (`MAX_SECTOR_POSITIONS`, `can_open_new_position`) are still defined but **not wired in** — no
+  sector map. (Open item for pre-deployment.)
 - **Survivorship bias**: the watchlist is *today's* index constituents applied to historical data,
   so backtest returns are optimistic. (Open item for pre-deployment.)
 - Going live means replacing the stub bodies in `ZerodhaAPI` (`login`, `place_order`, …) and
