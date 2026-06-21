@@ -16,6 +16,7 @@ __pycache__/
 
 # User generated files / Trades
 trades_log.csv
+trades_log_portfolio.csv
 
 # Wheels and Zips
 *.whl
