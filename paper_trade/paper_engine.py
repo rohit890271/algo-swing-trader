@@ -46,6 +46,7 @@ from strategy.risk import calculate_atr_stop_loss, calculate_target, position_si
 PAPER_DIR = os.path.join(os.path.dirname(__file__), "..", "paper_trades")
 OPEN_POSITIONS_FILE = os.path.join(PAPER_DIR, "open_positions.json")
 CLOSED_TRADES_FILE = os.path.join(PAPER_DIR, "closed_trades.csv")
+PORTFOLIO_STATE_FILE = os.path.join(PAPER_DIR, "portfolio_state.json")
 
 os.makedirs(PAPER_DIR, exist_ok=True)
 
@@ -63,6 +64,30 @@ def load_open_positions() -> dict:
 def save_open_positions(positions: dict) -> None:
     with open(OPEN_POSITIONS_FILE, "w") as f:
         json.dump(positions, f, indent=4)
+
+
+def load_portfolio_state(path: str = PORTFOLIO_STATE_FILE) -> dict:
+    """Load the running forward-test equity, defaulting to the starting capital."""
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            return {"equity": float(data.get("equity", INITIAL_CAPITAL)),
+                    "realized_pnl": float(data.get("realized_pnl", 0.0))}
+        except (json.JSONDecodeError, ValueError):
+            pass
+    return {"equity": float(INITIAL_CAPITAL), "realized_pnl": 0.0}
+
+
+def save_portfolio_state(state: dict, path: str = PORTFOLIO_STATE_FILE) -> None:
+    with open(path, "w") as f:
+        json.dump(state, f, indent=4)
+
+
+def apply_realized_pnl(state: dict, pnl_amount: float) -> dict:
+    """Return a new state with ``pnl_amount`` (INR) added to equity and realized P&L."""
+    return {"equity": round(state["equity"] + pnl_amount, 2),
+            "realized_pnl": round(state["realized_pnl"] + pnl_amount, 2)}
 
 
 def log_closed_trade(trade: dict) -> None:
@@ -106,7 +131,8 @@ def run_daily_job():
     print(f"Strategy Mode: {STRATEGY_MODE}")
 
     positions = load_open_positions()
-    
+    portfolio_state = load_portfolio_state()
+
     today_entries = 0
     today_exits = 0
     total_realized_pnl = 0.0
@@ -163,10 +189,13 @@ def run_daily_job():
             # Book 50% profit
             pnl_pct = ((latest_close - pos["entry_price"]) / pos["entry_price"]) * 100.0
             total_realized_pnl += pnl_pct
-            
+
             pos["partial_taken"] = True
             pos["qty"] = max(1, pos["qty"] // 2)
             pos["stop_loss"] = pos["entry_price"] # Move stop to breakeven
+
+            pnl_amount = (latest_close - pos["entry_price"]) * pos["qty"]
+            portfolio_state = apply_realized_pnl(portfolio_state, pnl_amount)
             
             trade_log = {
                 "symbol": symbol,
@@ -184,7 +213,10 @@ def run_daily_job():
             # Full Exit
             pnl_pct = ((latest_close - pos["entry_price"]) / pos["entry_price"]) * 100.0
             total_realized_pnl += pnl_pct
-            
+
+            pnl_amount = (latest_close - pos["entry_price"]) * pos["qty"]
+            portfolio_state = apply_realized_pnl(portfolio_state, pnl_amount)
+
             trade_log = {
                 "symbol": symbol,
                 "entry_date": pos["entry_date"],
@@ -349,7 +381,8 @@ def run_daily_job():
 
     # Save state
     save_open_positions(positions)
-    
+    save_portfolio_state(portfolio_state)
+
     # Save daily scan log
     DAILY_SCAN_LOG_FILE = os.path.join(PAPER_DIR, "daily_scan_log.csv")
     if scan_results:
@@ -371,6 +404,8 @@ def run_daily_job():
     print(f"   Today Entries  : {today_entries}")
     print(f"   Today Exits    : {today_exits}")
     print(f"   Total P&L      : {total_realized_pnl:+.2f}%")
+    print(f"   Forward Equity : {portfolio_state['equity']:,.2f} "
+          f"(realized {portfolio_state['realized_pnl']:+,.2f})")
     print(f"   =======================================")
     print(f"   [SCAN] CLOSEST TO ENTRY (Top 5)")
     print(f"   =======================================")
