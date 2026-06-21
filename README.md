@@ -9,7 +9,7 @@ A fully automated, quantitative swing trading engine built in Python. This syste
   - `RELAXED`: Active trading, higher frequency (~1 trade per 5.5 days), robust win rate (54%).
 - **Technical Analysis Engine**: Leverages TA-Lib to compute RSI, ADX, EMAs (20, 50, 200), and custom Volume filters.
 - **Automated Paper Trading**: Schedules a daily scan at market open (09:20 AM IST) to log actionable `ENTRY` signals and trace reasons for `FAIL` rejections in real-time.
-- **Robust Risk Management**: Uses fixed fractional risk sizing (1% risk per trade) and 2x ATR dynamic stop losses to simulate realistic portfolio compounding.
+- **Robust Risk Management**: Uses fixed-fractional risk sizing (0.75% risk per trade, configurable via `POSITION_RISK_PCT`) and a volatility-adaptive stop loss of 1.5× ATR, clamped between 1.5% and 4% of entry, to simulate realistic portfolio compounding.
 - **Performance Analytics**: Includes comprehensive backtest metrics (Win Rate, Profit Factor, Max Drawdown, Return).
 
 ## Installation
@@ -74,8 +74,9 @@ The strategy hunts for stocks that are in a strong uptrend but are currently exp
 - **Volume**: Average daily volume > 200,000 shares to ensure liquidity.
 - **Candle**: Today's candle must be Bullish to confirm the reversal.
 
-**Exits**:
-- **Stop Loss**: 2x ATR (Average True Range).
-- **Take Profit**: 8% target.
-- **Partial Exit**: Sells 50% of the position at 5% profit, trailing the rest.
-- **Time Stop**: Exits after 7 days if the trade hasn't resolved.
+**Exits** (evaluated in priority order in `check_exit_signal`):
+- **Take Profit**: 8% target hit.
+- **Stop Loss**: 1.5× ATR, clamped to 1.5%–4% of entry.
+- **Partial Exit**: Books 50% of the position at 5% profit, then moves the stop to breakeven on the remaining half.
+- **Time Stop**: Exits after 7 trading days if the trade hasn't resolved.
+- **Momentum / Reversal**: Also exits on RSI fading below 45, RSI crossing above 70, or a bearish-engulfing candle near resistance.

@@ -4,3 +4,6 @@ TA-Lib>=0.4.28
 kiteconnect>=5.0
 yfinance>=0.2.36
 schedule>=1.2.2
+
+# Dev / testing
+pytest>=8.0

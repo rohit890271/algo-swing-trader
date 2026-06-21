@@ -30,6 +30,7 @@ from config import (
     MIN_AVG_VOLUME,
     STRICT_MIN_AVG_VOLUME,
     RELAXED_MIN_AVG_VOLUME,
+    STRATEGY_MODE,
 )
 from broker.zerodha_api import get_ohlcv_free
 from strategy.signals import check_entry_signal, check_exit_signal
@@ -57,7 +58,7 @@ def _empty_trade_log() -> pd.DataFrame:
 # Core backtest loop for a single symbol
 # ──────────────────────────────────────────────
 
-def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | None = None, strategy_mode: str = "STRICT") -> pd.DataFrame:
+def _backtest_symbol(symbol: str, df: pd.DataFrame, nifty_df: pd.DataFrame | None = None, strategy_mode: str = STRATEGY_MODE) -> pd.DataFrame:
     """Run a day-by-day backtest on one symbol.
 
     Starts from bar index 200 (so all indicators have warmed up) and
@@ -300,7 +301,7 @@ def run_backtest(
     days: int = 1200,
     save_csv: bool = True,
     csv_path: str = "trades_log.csv",
-    strategy_mode: str = "STRICT",
+    strategy_mode: str = STRATEGY_MODE,
 ) -> dict:
     """Run the full backtest across every symbol in the watchlist.
 
