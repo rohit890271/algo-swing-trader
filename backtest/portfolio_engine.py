@@ -60,6 +60,28 @@ def _close_position(positions: dict, trades: list, sym: str, exit_price: float,
     return (exit_price * qty) - exit_cost
 
 
+def _book_partial(positions: dict, trades: list, sym: str, exit_price: float,
+                  exit_date, side_cost: float) -> float:
+    """Sell half the position, move stop to breakeven, return cash to add back."""
+    pos = positions[sym]
+    half = max(1, pos["qty"] // 2)
+    gross = half * (exit_price - pos["entry_price"])
+    exit_cost = exit_price * half * side_cost
+    notional = pos["entry_price"] * half
+    trades.append({
+        "symbol": sym, "entry_date": pos["entry_date"], "exit_date": exit_date,
+        "entry_price": round(pos["entry_price"], 2), "exit_price": round(exit_price, 2),
+        "qty": half, "gross_pnl": round(gross, 2), "cost": round(exit_cost, 2),
+        "net_pnl": round(gross - exit_cost, 2),
+        "net_pnl_pct": round((gross - exit_cost) / notional * 100.0, 2) if notional else 0.0,
+        "exit_reason": "PARTIAL_EXIT_50%",
+    })
+    pos["qty"] -= half
+    pos["partial_taken"] = True
+    pos["stop_loss"] = pos["entry_price"]   # breakeven
+    return (exit_price * half) - exit_cost
+
+
 def _default_entry_decision(window: pd.DataFrame, mode: str) -> bool:
     return check_entry_signal(window, strategy_mode=mode)["signal"]
 
@@ -115,15 +137,18 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
         return eq
 
     for date in all_dates:
-        # ---- Phase 1a: fill queued discretionary exits at TODAY's open ----
+        # ---- Phase 1a: fill queued exits at TODAY's open ----
         for sym, reason in pending_exits:
             if sym not in positions:
                 continue
             df = price_data[sym]
             if date not in df.index:
                 continue
-            cash += _close_position(positions, trades, sym, float(df.loc[date, "open"]),
-                                    date, reason, side_cost)
+            open_px = float(df.loc[date, "open"])
+            if reason == "PARTIAL_EXIT_5PCT":
+                cash += _book_partial(positions, trades, sym, open_px, date, side_cost)
+            else:
+                cash += _close_position(positions, trades, sym, open_px, date, reason, side_cost)
         pending_exits = []
 
         # ---- Phase 1: fill queued entries at TODAY's open ----
@@ -188,13 +213,15 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
             slots = max_positions - len(positions)
             pending_entries = [s for s, _ in candidates[:slots]]
 
-        # ---- Phase 3b: discretionary exit signals -> queue for next open ----
+        # ---- Phase 3b: exit signals -> queue for next open ----
         for sym, pos in list(positions.items()):
             window = price_data[sym].loc[:date]
             if window.index[-1] != date:
                 continue
             reason = exit_decision(window, pos, MAX_HOLD_DAYS)
             if reason in DISCRETIONARY_EXITS:
+                pending_exits.append((sym, reason))
+            elif reason == "PARTIAL_EXIT_5PCT" and not pos.get("partial_taken"):
                 pending_exits.append((sym, reason))
 
         equity_records[date] = current_equity(date)
