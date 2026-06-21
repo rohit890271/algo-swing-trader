@@ -26,3 +26,9 @@ def test_load_defaults_when_missing(tmp_path):
     loaded = pp.load_portfolio_state(str(path))
     assert loaded["equity"] == pp.INITIAL_CAPITAL
     assert loaded["realized_pnl"] == 0.0
+
+
+def test_partial_sold_qty_books_the_sold_half():
+    assert pp.partial_sold_qty(10) == 5    # even: sold == retained
+    assert pp.partial_sold_qty(11) == 6    # odd: sold is the larger remainder
+    assert pp.partial_sold_qty(1) == 0     # single share cannot be partialled

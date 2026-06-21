@@ -90,6 +90,15 @@ def apply_realized_pnl(state: dict, pnl_amount: float) -> dict:
             "realized_pnl": round(state["realized_pnl"] + pnl_amount, 2)}
 
 
+def partial_sold_qty(qty: int) -> int:
+    """Shares booked on a 50% partial exit: total minus the retained half.
+
+    The retained half is ``max(1, qty // 2)`` (matching the position-mutation
+    logic), so a 1-share position books 0 (cannot be partialled).
+    """
+    return qty - max(1, qty // 2)
+
+
 def log_closed_trade(trade: dict) -> None:
     file_exists = os.path.exists(CLOSED_TRADES_FILE)
     with open(CLOSED_TRADES_FILE, "a", newline="") as f:
@@ -190,13 +199,14 @@ def run_daily_job():
             pnl_pct = ((latest_close - pos["entry_price"]) / pos["entry_price"]) * 100.0
             total_realized_pnl += pnl_pct
 
+            sold_qty = partial_sold_qty(pos["qty"])
+            pnl_amount = (latest_close - pos["entry_price"]) * sold_qty
+            portfolio_state = apply_realized_pnl(portfolio_state, pnl_amount)
+
             pos["partial_taken"] = True
             pos["qty"] = max(1, pos["qty"] // 2)
             pos["stop_loss"] = pos["entry_price"] # Move stop to breakeven
 
-            pnl_amount = (latest_close - pos["entry_price"]) * pos["qty"]
-            portfolio_state = apply_realized_pnl(portfolio_state, pnl_amount)
-            
             trade_log = {
                 "symbol": symbol,
                 "entry_date": pos["entry_date"],
