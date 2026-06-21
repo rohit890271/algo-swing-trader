@@ -72,6 +72,7 @@ COMMISSION_PCT: float = 0.03               # brokerage + charges (%)
 SLIPPAGE_PCT: float = 0.05                 # estimated slippage (%)
 PAPER_TRADE: bool = True                   # True = no real orders placed
 MAX_HOLD_DAYS: int = 7                    # max trading days to hold a swing trade
+SURVIVORSHIP_HAIRCUT_PCT: float = 20.0     # blunt downward adjustment to returns for survivorship bias
 
 # ──────────────────────────────────────────────
 # Watchlists (NSE symbols to scan)

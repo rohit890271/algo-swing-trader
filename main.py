@@ -1,31 +1,14 @@
-"""
-Main entry-point for the swing trading backtest system.
+"""Main entry-point for the swing trading backtest system.
 
 Usage::
 
     python main.py
 
-Fetches live OHLCV data from Yahoo Finance for every symbol in
-``config.WATCHLIST``, runs the day-by-day backtest, and saves
-the trade log to ``trades_log.csv``.
+Loads daily OHLCV for every symbol in ``config.WATCHLIST`` from Yahoo Finance,
+runs the portfolio-level backtest, and prints the baseline tear-sheet.
 """
 
-from backtest.engine import run_backtest
-
-
-def main() -> None:
-    """Run the full swing-trade backtest and print results."""
-    result = run_backtest()
-
-    trade_log = result["trade_log"]
-    if not trade_log.empty:
-        print("\n[Detailed Trade Log]")
-        print(trade_log.to_string(index=False))
-    else:
-        print("\n[!] No trades were generated across all symbols.")
-
-    print("\n[DONE]")
-
+from backtest.run_portfolio import main
 
 if __name__ == "__main__":
     main()
