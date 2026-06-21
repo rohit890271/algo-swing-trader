@@ -72,25 +72,25 @@ def _book_partial(positions: dict, trades: list, sym: str, exit_price: float,
     if pos["qty"] < 2:
         pos["partial_taken"] = True
         return 0.0
-    half = pos["qty"] // 2
-    entry_cost_share = round(pos["entry_cost"] * half / pos["qty"], 4)
-    gross = half * (exit_price - pos["entry_price"])
-    exit_cost = exit_price * half * side_cost
+    sold = pos["qty"] - max(1, pos["qty"] // 2)   # ceil half; matches paper_engine.partial_sold_qty
+    entry_cost_share = round(pos["entry_cost"] * sold / pos["qty"], 4)
+    gross = sold * (exit_price - pos["entry_price"])
+    exit_cost = exit_price * sold * side_cost
     cost = entry_cost_share + exit_cost
-    notional = pos["entry_price"] * half
+    notional = pos["entry_price"] * sold
     trades.append({
         "symbol": sym, "entry_date": pos["entry_date"], "exit_date": exit_date,
         "entry_price": round(pos["entry_price"], 2), "exit_price": round(exit_price, 2),
-        "qty": half, "gross_pnl": round(gross, 2), "cost": round(cost, 2),
+        "qty": sold, "gross_pnl": round(gross, 2), "cost": round(cost, 2),
         "net_pnl": round(gross - cost, 2),
         "net_pnl_pct": round((gross - cost) / notional * 100.0, 2) if notional else 0.0,
         "exit_reason": "PARTIAL_EXIT_50%",
     })
-    pos["qty"] -= half
+    pos["qty"] -= sold
     pos["entry_cost"] -= entry_cost_share
     pos["partial_taken"] = True
     pos["stop_loss"] = pos["entry_price"]   # breakeven
-    return (exit_price * half) - exit_cost
+    return (exit_price * sold) - exit_cost
 
 
 def _default_entry_decision(window: pd.DataFrame, mode: str) -> bool:

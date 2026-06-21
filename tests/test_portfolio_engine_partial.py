@@ -70,3 +70,15 @@ def test_book_partial_splits_entry_cost_proportionally():
     # cost = entry_cost_share(4.0) + exit_cost(110*5*0.0008 = 0.44) = 4.44
     assert row["cost"] == 4.44
     assert positions["AAA"]["qty"] == 5
+
+
+def test_book_partial_sells_ceil_half_matching_paper_engine_convention():
+    # qty=3 must sell 2 (qty - max(1, qty//2)), keeping 1 — same as the paper engine.
+    d = pd.Timestamp("2026-01-02")
+    positions = {"AAA": {"symbol": "AAA", "entry_date": d, "entry_price": 100.0,
+                         "qty": 3, "stop_loss": 98.0, "target": 108.0,
+                         "partial_taken": False, "entry_cost": 0.24}}
+    trades = []
+    pe._book_partial(positions, trades, "AAA", 110.0, d, side_cost=0.0008)
+    assert trades[0]["qty"] == 2          # sold the ceil half
+    assert positions["AAA"]["qty"] == 1   # retained max(1, 3//2) = 1
