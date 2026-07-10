@@ -16,7 +16,7 @@ def _empty_metrics() -> dict:
         "total_trades": 0, "winners": 0, "losers": 0, "win_rate_pct": 0.0,
         "avg_win_pct": 0.0, "avg_loss_pct": 0.0, "expectancy_pct": 0.0,
         "profit_factor": 0.0, "max_drawdown_pct": 0.0, "total_return_pct": 0.0,
-        "cagr_pct": 0.0, "sharpe": 0.0, "exposure_pct": 0.0,
+        "cagr_pct": 0.0, "mar_ratio": 0.0, "sharpe": 0.0, "exposure_pct": 0.0,
     }
 
 
@@ -38,6 +38,13 @@ def compute_metrics(trade_log: pd.DataFrame, equity_curve: pd.Series,
         years = days / 365.25 if days > 0 else 0.0
         if years > 0 and end_eq > 0:
             m["cagr_pct"] = round(((end_eq / start_capital) ** (1 / years) - 1) * 100.0, 2)
+
+        # MAR / Calmar ratio: CAGR over max drawdown — the headline
+        # risk-adjusted-return figure for Phase 2 experiments.
+        if m["max_drawdown_pct"] > 0:
+            m["mar_ratio"] = round(m["cagr_pct"] / m["max_drawdown_pct"], 2)
+        elif m["cagr_pct"] > 0:
+            m["mar_ratio"] = float("inf")
 
         daily_ret = equity_curve.pct_change().dropna()
         if len(daily_ret) > 1 and daily_ret.std() > 0:
@@ -83,6 +90,11 @@ def apply_haircut(metrics_dict: dict, haircut_pct: float) -> dict:
     return out
 
 
+def _fmt_mar(mar: float) -> str:
+    """Format the MAR ratio, tolerating the infinite (zero-drawdown) case."""
+    return "inf" if mar == float("inf") else f"{mar:.2f}"
+
+
 def format_tearsheet(metrics_dict: dict, title: str = "BACKTEST BASELINE") -> str:
     """Render a metrics dict as a fixed-width text block."""
     pf = metrics_dict["profit_factor"]
@@ -100,6 +112,7 @@ def format_tearsheet(metrics_dict: dict, title: str = "BACKTEST BASELINE") -> st
         f"  Max Drawdown   : {metrics_dict['max_drawdown_pct']:.2f}%",
         f"  Total Return   : {metrics_dict['total_return_pct']:+.2f}%",
         f"  CAGR           : {metrics_dict['cagr_pct']:+.2f}%",
+        f"  MAR (Calmar)   : {_fmt_mar(metrics_dict['mar_ratio'])}",
         f"  Sharpe         : {metrics_dict['sharpe']:.2f}",
         f"  Exposure       : {metrics_dict['exposure_pct']:.2f}% of days",
         "=" * 55,

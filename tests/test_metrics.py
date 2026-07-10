@@ -61,3 +61,18 @@ def test_empty_log_is_safe():
     m = metrics.compute_metrics(pd.DataFrame(), equity, counts, start_capital=100000)
     assert m["total_trades"] == 0
     assert m["profit_factor"] == 0.0
+
+
+def test_mar_ratio_is_cagr_over_max_drawdown():
+    equity, counts = _equity_and_counts()
+    m = metrics.compute_metrics(_trade_log(), equity, counts, start_capital=100000)
+    assert m["max_drawdown_pct"] > 0
+    assert m["mar_ratio"] == round(m["cagr_pct"] / m["max_drawdown_pct"], 2)
+
+
+def test_mar_ratio_inf_when_no_drawdown():
+    idx = pd.bdate_range("2026-01-01", periods=5)
+    rising = pd.Series([100000, 100100, 100200, 100300, 100400.0], index=idx)
+    counts = pd.Series([1, 1, 1, 1, 1], index=idx)
+    m = metrics.compute_metrics(pd.DataFrame(), rising, counts, start_capital=100000)
+    assert m["mar_ratio"] == float("inf")
