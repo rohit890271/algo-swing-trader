@@ -142,6 +142,21 @@ def test_rs_condition_absent_when_disabled():
 
 
 # ──────────────────────────────────────────────
+# H2 interplay: partial exit must not lower a trailed stop
+# ──────────────────────────────────────────────
+
+def test_partial_breakeven_is_a_floor_not_a_reset():
+    d = pd.Timestamp("2026-01-02")
+    positions = {"AAA": {"symbol": "AAA", "entry_date": d, "entry_price": 100.0,
+                         "qty": 10, "stop_loss": 106.7,   # already trailed above entry
+                         "target": float("inf"), "partial_taken": False,
+                         "entry_cost": 0.8}}
+    trades = []
+    pe._book_partial(positions, trades, "AAA", 110.0, d, side_cost=0.0008)
+    assert positions["AAA"]["stop_loss"] == 106.7   # NOT reset down to 100
+
+
+# ──────────────────────────────────────────────
 # H1 in the paper engine: is_market_regime_ok
 # ──────────────────────────────────────────────
 

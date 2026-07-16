@@ -50,18 +50,23 @@ REWARD_RISK_RATIO: float = 2.0             # minimum R:R for a trade
 STRATEGY_MODE: str = "RELAXED"  # "STRICT" or "RELAXED"
 
 # ──────────────────────────────────────────────
-# Phase 2 Edge Hypotheses (each independently toggleable; default = Phase 1
-# baseline behaviour. Validated one at a time against the walk-forward OOS
-# guardrail before being enabled together.)
+# Phase 2 Edge Hypotheses (each independently toggleable).
+#
+# Validated 2026-07-16 via backtest/phase2_experiments.py, one variable at a
+# time against the walk-forward OOS guardrail (no parameter tuning):
+#   H1+H2 combined:  MAR 0.21 -> 0.59, Sharpe 0.47 -> 0.90, win 63.0%,
+#                    PF 2.85, expectancy +2.31%/trade, MDD 8.40%,
+#                    OOS segment PFs 3.36 (31 trades) / 3.51 (63 trades).
+#   H3 (relative strength) degraded OOS results -> left disabled.
 # ──────────────────────────────────────────────
-REGIME_FILTER_ENABLED: bool = False        # H1: only enter longs when Nifty > its EMA
+REGIME_FILTER_ENABLED: bool = True         # H1: only enter longs when Nifty > its EMA
 REGIME_EMA_PERIOD: int = 200               # EMA period for the index regime check
 
-TRAILING_EXIT_ENABLED: bool = False        # H2: trail winners instead of fixed 8% target
+TRAILING_EXIT_ENABLED: bool = True         # H2: trail winners instead of fixed 8% target
 TRAILING_MAX_HOLD_DAYS: int = 20           # relaxed time stop used only when trailing
 TRAILING_ACTIVATION_GAIN: float = 1.04     # start trailing once price >= entry * this
 
-RS_FILTER_ENABLED: bool = False            # H3: only enter stocks outperforming the index
+RS_FILTER_ENABLED: bool = False            # H3: rejected in OOS validation -- keep off
 RS_LOOKBACK_DAYS: int = 63                 # ~3 months relative-strength lookback
 
 # STRICT Mode Parameters (Current Settings)

@@ -1,8 +1,17 @@
 # Pre-Deployment Strategy Program — Design Spec
 
 **Date:** 2026-06-21
-**Status:** Phase 1 implemented; Phases 2–3 pending
+**Status:** Phases 1–2 implemented; Phase 3 pending
 **Author:** brainstormed with Claude
+
+> **Phase 2 outcome (2026-07-16):** hypotheses tested one-at-a-time via
+> `backtest/phase2_experiments.py` against the walk-forward OOS guardrail.
+> Regime filter (H1) + trailing exits (H2) adopted as defaults:
+> MAR 0.21→0.59, Sharpe 0.47→0.90, win 63.0%, PF 2.85, expectancy
+> +2.31%/trade, MDD 8.40%, OOS segment PFs 3.36/3.51. Relative strength (H3)
+> degraded OOS results and was rejected. The pre-committed deployability bar
+> (OOS MAR ≥ ~0.8) was **not** met (0.59) — the 4-week forward paper test and
+> any real-money decision must weigh that explicitly.
 
 ## Context
 

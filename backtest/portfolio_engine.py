@@ -94,7 +94,8 @@ def _book_partial(positions: dict, trades: list, sym: str, exit_price: float,
     pos["qty"] -= sold
     pos["entry_cost"] -= entry_cost_share
     pos["partial_taken"] = True
-    pos["stop_loss"] = pos["entry_price"]   # breakeven
+    # Breakeven is a floor: never lower a stop that has already trailed above entry.
+    pos["stop_loss"] = max(pos["stop_loss"], pos["entry_price"])
     return (exit_price * sold) - exit_cost
 
 

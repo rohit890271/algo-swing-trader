@@ -26,7 +26,9 @@ def test_segment_pf_not_starved_by_default_warmup():
         return window.index[-1] == sl.index[1]      # enter on the 2nd bar of the slice
 
     def exit_stub(window, position, max_hold):
-        return "MOMENTUM_FADE" if window.index[-1] == sl.index[5] else "HOLD"
+        # TIME_EXIT is honoured in both exit modes (MOMENTUM_FADE is ignored
+        # when the trailing-exit flag — now the default — is on).
+        return "TIME_EXIT" if window.index[-1] == sl.index[5] else "HOLD"
 
     pf = wf._segment_pf(data, entry_decision=entry_stub, exit_decision=exit_stub)
     # With the old warmup=200 default the 70-row slice yields zero trades -> PF 0.0.

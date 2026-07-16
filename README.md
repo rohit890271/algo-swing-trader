@@ -72,6 +72,7 @@ python compare_modes.py
 The strategy hunts for stocks that are in a strong uptrend but are currently experiencing a short-term pullback.
 
 **Core Rules (RELAXED Mode)**:
+- **Market Regime** *(Phase 2, default on)*: New entries only when the Nifty 50 closes above its 200-day EMA — the strategy sits in cash through bear markets.
 - **Trend**: Price > 50-day EMA.
 - **Momentum**: 20-day EMA > 50-day EMA.
 - **Pullback**: Stock has pulled back between 3.5% and 8.0% from its recent 10-day high.
@@ -80,9 +81,11 @@ The strategy hunts for stocks that are in a strong uptrend but are currently exp
 - **Volume**: Average daily volume > 200,000 shares to ensure liquidity.
 - **Candle**: Today's candle must be Bullish to confirm the reversal.
 
-**Exits** (evaluated in priority order in `check_exit_signal`):
-- **Take Profit**: 8% target hit.
-- **Stop Loss**: 1.5× ATR, clamped to 1.5%–4% of entry.
-- **Partial Exit**: Books 50% of the position at 5% profit, then moves the stop to breakeven on the remaining half.
-- **Time Stop**: Exits after 7 trading days if the trade hasn't resolved.
-- **Momentum / Reversal**: Also exits on RSI fading below 45, RSI crossing above 70, or a bearish-engulfing candle near resistance.
+**Exits** (trailing mode — the Phase 2 default, `TRAILING_EXIT_ENABLED = True`):
+- **Trailing Stop**: Once the position is up 4%, the stop ratchets to 3% below each close — winners run until the trail is hit (no fixed profit cap).
+- **Stop Loss**: Initial stop at 1.5× ATR, clamped to 1.5%–4% of entry.
+- **Partial Exit**: Books 50% at +5%; the stop floor moves to breakeven (never below an already-trailed stop).
+- **Time Stop**: 20 trading days.
+- **Reversal**: RSI crossing above 70 or a bearish-engulfing candle near resistance still exits.
+
+*Legacy fixed-target mode* (`TRAILING_EXIT_ENABLED = False`): 8% take-profit, 7-day time stop, and RSI<45 momentum-fade exits — kept for comparison; validated as inferior (see `backtest/phase2_experiments.py`).

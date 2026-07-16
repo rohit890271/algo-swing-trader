@@ -30,7 +30,8 @@ def test_target_hit_closes_position_with_costs():
 
     out = pe.simulate({"AAA": df}, start_capital=100000, warmup=0,
                       entry_decision=lambda w, m: w.index[-1] == df.index[1],
-                      exit_decision=lambda w, p, h: "HOLD")
+                      exit_decision=lambda w, p, h: "HOLD",
+                      trailing_exit=False)   # these tests pin the fixed-target mode
     log = out["trade_log"]
     assert len(log) == 1
     row = log.iloc[0]
@@ -54,7 +55,8 @@ def test_stop_checked_before_target_when_both_touched():
     ])
     out = pe.simulate({"AAA": df}, start_capital=100000, warmup=0,
                       entry_decision=lambda w, m: w.index[-1] == df.index[1],
-                      exit_decision=lambda w, p, h: "HOLD")
+                      exit_decision=lambda w, p, h: "HOLD",
+                      trailing_exit=False)   # these tests pin the fixed-target mode
     row = out["trade_log"].iloc[0]
     assert row["exit_reason"] == "STOP_LOSS"
     assert row["exit_price"] == 98.5    # stop level, no gap (open 100 > stop)
@@ -74,7 +76,7 @@ def test_discretionary_exit_fills_next_open():
 
     out = pe.simulate({"AAA": df}, start_capital=100000, warmup=0,
                       entry_decision=lambda w, m: w.index[-1] == df.index[1],
-                      exit_decision=exit_on_day3)
+                      exit_decision=exit_on_day3, trailing_exit=False)
     row = out["trade_log"].iloc[0]
     assert row["exit_reason"] == "MOMENTUM_FADE"
     assert row["exit_price"] == 105.0   # next-open, not the 101 signal close

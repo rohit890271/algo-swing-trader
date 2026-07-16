@@ -22,6 +22,9 @@ python compare_modes.py
 # Walk-forward (strict non-overlapping 3-segment OOS check over the portfolio engine)
 python -m backtest.walk_forward
 
+# Phase 2 experiment matrix: control vs each edge-hypothesis flag, one data fetch
+python -m backtest.phase2_experiments
+
 # Run the full test suite
 .venv/Scripts/python.exe -m pytest -q
 
@@ -90,6 +93,12 @@ The original entry-signal duplication, stop-loss doc drift, mode-default mismatc
   `walk_forward`, and the paper engine all default to `config.STRATEGY_MODE` (currently `RELAXED`).
   `compare_modes.py` still passes explicit modes to run both. Override per-call with the
   `strategy_mode` arg.
+- **Phase 2 flags `REGIME_FILTER_ENABLED` + `TRAILING_EXIT_ENABLED` are ON by default**
+  (validated 2026-07-16: MAR 0.21→0.59, Sharpe 0.90, OOS PFs 3.36/3.51 — see the comment block
+  in config.py and `backtest/phase2_experiments.py`). `RS_FILTER_ENABLED` was **rejected** in OOS
+  validation and stays off. With trailing on there is **no fixed 8% target**, momentum-fade exits
+  are ignored, and the hold limit is `TRAILING_MAX_HOLD_DAYS` (20). Engine tests that pin the
+  fixed-target mode pass `trailing_exit=False` explicitly.
 - **Stop-loss** uses `calculate_atr_stop_loss()` (1.5× ATR, clamped 1.5%–4%). The older
   `atr_stop_loss()` (2× ATR) and `build_trade_risk()` in risk.py are **not on the live path** —
   the `ATR_STOP_MULTIPLIER = 2.0` constant only feeds those unused helpers.

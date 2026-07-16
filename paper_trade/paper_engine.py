@@ -240,7 +240,8 @@ def run_daily_job():
 
             pos["partial_taken"] = True
             pos["qty"] = max(1, pos["qty"] // 2)
-            pos["stop_loss"] = pos["entry_price"] # Move stop to breakeven
+            # Breakeven is a floor: never lower a stop already trailed above entry.
+            pos["stop_loss"] = max(pos["stop_loss"], pos["entry_price"])
 
             trade_log = {
                 "symbol": symbol,
