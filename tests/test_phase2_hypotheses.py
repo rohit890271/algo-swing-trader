@@ -139,3 +139,17 @@ def test_rs_condition_absent_when_disabled():
     stock, bench = _rs_frames(stock_slope=0.5, bench_slope=0.05)
     result = check_entry_signal(stock, nifty_df=bench, strategy_mode="RELAXED")
     assert "vs Nifty" not in result["reason"]
+
+
+# ──────────────────────────────────────────────
+# Regression: tiny windows must not crash the screener
+# ──────────────────────────────────────────────
+
+def test_check_entry_signal_degrades_on_tiny_window():
+    # Walk-forward segments run with warmup=0, so the first days hand the
+    # screener 1-4 row windows. It must say "no signal", not raise IndexError.
+    stock, _ = _rs_frames(stock_slope=0.5, bench_slope=0.05)
+    for n in (1, 2, 3, 4):
+        result = check_entry_signal(stock.iloc[:n], strategy_mode="RELAXED")
+        assert result["signal"] is False
+        assert "need >= 5" in result["reason"]

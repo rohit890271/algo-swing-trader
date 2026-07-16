@@ -115,6 +115,13 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None, s
     else:
         data = df
 
+    # Too little history to evaluate the volume/pullback lookbacks (iloc[-4]
+    # etc.) -- degrade to "no signal" instead of raising.
+    if len(data) < 5:
+        return {"signal": False,
+                "reason": f"Entry conditions NOT met ({strategy_mode} MODE)\n"
+                          f"[FAIL] Only {len(data)} bars of data -- need >= 5"}
+
     # Latest bar values
     latest  = data.iloc[-1]
     close   = latest["close"]
