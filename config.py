@@ -49,6 +49,20 @@ REWARD_RISK_RATIO: float = 2.0             # minimum R:R for a trade
 # ──────────────────────────────────────────────
 STRATEGY_MODE: str = "RELAXED"  # "STRICT" or "RELAXED"
 
+# ──────────────────────────────────────────────
+# Phase 2 Edge Hypotheses (each independently toggleable; default = Phase 1
+# baseline behaviour. Validated one at a time against the walk-forward OOS
+# guardrail before being enabled together.)
+# ──────────────────────────────────────────────
+REGIME_FILTER_ENABLED: bool = False        # H1: only enter longs when Nifty > its EMA
+REGIME_EMA_PERIOD: int = 200               # EMA period for the index regime check
+
+TRAILING_EXIT_ENABLED: bool = False        # H2: trail winners instead of fixed 8% target
+TRAILING_MAX_HOLD_DAYS: int = 20           # relaxed time stop used only when trailing
+
+RS_FILTER_ENABLED: bool = False            # H3: only enter stocks outperforming the index
+RS_LOOKBACK_DAYS: int = 63                 # ~3 months relative-strength lookback
+
 # STRICT Mode Parameters (Current Settings)
 STRICT_RSI_MIN: float = 42.0
 STRICT_RSI_MAX: float = 60.0

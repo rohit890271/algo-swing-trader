@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+import config as _config   # read Phase 2 flags dynamically (testable via monkeypatch)
 from config import (
     STRICT_RSI_MIN,
     STRICT_RSI_MAX,
@@ -73,7 +74,9 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None, s
         df:       OHLCV ``pandas.DataFrame`` with a DatetimeIndex.  Must
                   contain at least 200 rows for the slowest EMA to warm up.
         nifty_df: Optional OHLCV DataFrame for the Nifty 50 index
-                  (``^NSEI``).  Currently unused but kept for compatibility.
+                  (``^NSEI``), sliced up to the signal date.  Used by the
+                  optional relative-strength condition when
+                  ``config.RS_FILTER_ENABLED`` is on; otherwise ignored.
         strategy_mode: "STRICT" or "RELAXED" - determines entry criteria.
 
     Returns:
@@ -211,8 +214,24 @@ def check_entry_signal(df: pd.DataFrame, nifty_df: pd.DataFrame | None = None, s
         f"{'>' if cond9 else '<='} {adx_min} -- {'trending' if cond9 else 'sideways'}"
     )
 
+    # -- Condition 10 (optional, Phase 2 H3): relative strength vs index --
+    # Only trade stocks outperforming the benchmark over the lookback window.
+    cond10 = True
+    if _config.RS_FILTER_ENABLED and nifty_df is not None:
+        lookback = _config.RS_LOOKBACK_DAYS
+        if len(data) > lookback and len(nifty_df) > lookback:
+            stock_ret = (data["close"].iloc[-1] / data["close"].iloc[-lookback - 1] - 1) * 100.0
+            nifty_ret = (nifty_df["close"].iloc[-1] / nifty_df["close"].iloc[-lookback - 1] - 1) * 100.0
+            cond10 = stock_ret > nifty_ret
+            reasons.append(
+                f"{'[PASS]' if cond10 else '[FAIL]'} RS {stock_ret:+.2f}% vs "
+                f"Nifty {nifty_ret:+.2f}% over {lookback}d"
+            )
+        else:
+            reasons.append("[SKIP] RS filter -- not enough data")
+
     # -- Composite verdict --------------------
-    signal = all([cond1, cond2, cond3, cond4, cond5, cond6, cond7, cond8, cond9])
+    signal = all([cond1, cond2, cond3, cond4, cond5, cond6, cond7, cond8, cond9, cond10])
     summary = f"ALL CONDITIONS MET - ENTRY ({strategy_mode} MODE)" if signal else f"Entry conditions NOT met ({strategy_mode} MODE)"
 
     return {

@@ -23,13 +23,18 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import pandas as pd
 
+import config as _cfg
 from config import (
     INITIAL_CAPITAL, MAX_OPEN_POSITIONS, POSITION_RISK_PCT, MAX_HOLD_DAYS,
     STRATEGY_MODE,
 )
 from strategy.signals import check_entry_signal, check_exit_signal
-from strategy.risk import calculate_atr_stop_loss, calculate_target, position_size
+from strategy.risk import (
+    calculate_atr_stop_loss, calculate_target, position_size, trailing_stop_update,
+)
 from backtest.costs import one_side_cost_pct
+
+TRAILING_ACTIVATION_GAIN = 1.04   # trail only after +4% (mirrors risk.trailing_stop)
 
 TRADE_COLUMNS = [
     "symbol", "entry_date", "exit_date", "entry_price", "exit_price",
@@ -121,10 +126,34 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
              strategy_mode: str = STRATEGY_MODE, max_positions: int = MAX_OPEN_POSITIONS,
              risk_pct: float = POSITION_RISK_PCT, warmup: int = 200,
              entry_decision=None, exit_decision=None,
-             nifty_df: pd.DataFrame | None = None) -> dict:
-    """Run the portfolio simulation. Returns trade_log / equity_curve / positions_count."""
-    entry_decision = entry_decision or _default_entry_decision
+             nifty_df: pd.DataFrame | None = None,
+             regime_ok: dict | None = None,
+             trailing_exit: bool | None = None) -> dict:
+    """Run the portfolio simulation. Returns trade_log / equity_curve / positions_count.
+
+    Phase 2 hypothesis hooks (all default to Phase 1 baseline behaviour):
+
+    * ``regime_ok`` (H1) — optional ``{date: bool}`` map; new entries are not
+      queued on dates where the market regime is False. Exits are unaffected.
+    * ``nifty_df`` (H3) — benchmark OHLCV threaded into ``check_entry_signal``
+      (sliced to the signal date, no look-ahead) so the relative-strength
+      condition can evaluate when ``config.RS_FILTER_ENABLED`` is on.
+    * ``trailing_exit`` (H2) — ``None`` reads ``config.TRAILING_EXIT_ENABLED``.
+      When on: no fixed 8% target, the stop ratchets up 3% below close once the
+      position is +4%, the momentum-fade exit is ignored, and the time stop
+      relaxes to ``config.TRAILING_MAX_HOLD_DAYS``.
+    """
+    if trailing_exit is None:
+        trailing_exit = _cfg.TRAILING_EXIT_ENABLED
+    if entry_decision is None:
+        def entry_decision(window: pd.DataFrame, mode: str) -> bool:
+            nifty_window = None
+            if nifty_df is not None:
+                nifty_window = nifty_df.loc[:window.index[-1]]
+            return check_entry_signal(window, nifty_df=nifty_window,
+                                      strategy_mode=mode)["signal"]
     exit_decision = exit_decision or _default_exit_decision
+    max_hold = _cfg.TRAILING_MAX_HOLD_DAYS if trailing_exit else MAX_HOLD_DAYS
     side_cost = one_side_cost_pct()
 
     all_dates = sorted(set().union(*[df.index for df in price_data.values()])) \
@@ -174,7 +203,9 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
             if atr_val <= 0:
                 continue
             stop = calculate_atr_stop_loss(entry_price, atr_value=atr_val)
-            target = calculate_target(entry_price, target_pct=0.08)
+            # H2: no fixed profit cap when trailing — the ratcheted stop exits.
+            target = float("inf") if trailing_exit \
+                else calculate_target(entry_price, target_pct=0.08)
             equity_now = current_equity(date)
             try:
                 qty = position_size(equity_now, entry_price, stop, risk_pct / 100.0)
@@ -209,8 +240,20 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
                 fill = max(float(bar["open"]), pos["target"])      # gap up -> open
                 cash += _close_position(positions, trades, sym, fill, date, "TARGET_HIT", side_cost)
 
+        # ---- Phase 2b (H2): ratchet trailing stops on TODAY's close ----
+        # The raised stop takes effect from the NEXT bar's intrabar check.
+        if trailing_exit:
+            for sym, pos in positions.items():
+                df = price_data[sym]
+                if date not in df.index:
+                    continue
+                close_px = float(df.loc[date, "close"])
+                if close_px >= pos["entry_price"] * TRAILING_ACTIVATION_GAIN:
+                    pos["stop_loss"] = trailing_stop_update(pos["stop_loss"], close_px)
+
         # ---- Phase 3: evaluate signals on TODAY's close, queue for next open ----
-        if len(positions) < max_positions:
+        regime_on = regime_ok.get(date, True) if regime_ok is not None else True
+        if len(positions) < max_positions and regime_on:
             candidates = []
             for sym, df in price_data.items():
                 if sym in positions:
@@ -229,7 +272,9 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
             window = price_data[sym].loc[:date]
             if window.index[-1] != date:
                 continue
-            reason = exit_decision(window, pos, MAX_HOLD_DAYS)
+            reason = exit_decision(window, pos, max_hold)
+            if trailing_exit and reason == "MOMENTUM_FADE":
+                continue   # H2: let the trailing stop, not RSI dips, end winners
             if reason in DISCRETIONARY_EXITS:
                 pending_exits.append((sym, reason))
             elif reason == "PARTIAL_EXIT_5PCT" and not pos.get("partial_taken"):
