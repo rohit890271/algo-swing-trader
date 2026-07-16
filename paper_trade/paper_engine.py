@@ -23,6 +23,7 @@ import pandas as pd
 # Ensure the project root is importable
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
+import config as _cfg   # Phase 2 flags read dynamically (testable via monkeypatch)
 from config import (
     INITIAL_CAPITAL,
     WATCHLIST,
@@ -35,9 +36,11 @@ from config import (
     RELAXED_MIN_AVG_VOLUME,
 )
 from broker.zerodha_api import get_ohlcv_free
-from strategy.indicators import enrich_with_indicators
+from strategy.indicators import enrich_with_indicators, ema
 from strategy.signals import check_entry_signal, check_exit_signal
-from strategy.risk import calculate_atr_stop_loss, calculate_target, position_size
+from strategy.risk import (
+    calculate_atr_stop_loss, calculate_target, position_size, trailing_stop_update,
+)
 
 # ──────────────────────────────────────────────
 # Setup Paths & State Management
@@ -109,6 +112,24 @@ def log_closed_trade(trade: dict) -> None:
         writer.writerow(trade)
 
 
+def is_market_regime_ok(nifty_df: pd.DataFrame | None,
+                        ema_period: int | None = None) -> bool:
+    """True when the index closes above its regime EMA (H1 market filter).
+
+    Fails **open** (returns True) when the benchmark is missing or too short
+    to compute the EMA, so a data outage cannot silently gate the strategy —
+    the regime filter only applies when the regime is actually measurable.
+    """
+    if nifty_df is None or len(nifty_df) == 0:
+        return True
+    period = ema_period if ema_period is not None else _cfg.REGIME_EMA_PERIOD
+    closes = nifty_df["close"].astype(float)   # TA-Lib requires float64
+    bench_ema = ema(closes, period).iloc[-1]
+    if pd.isna(bench_ema):
+        return True
+    return bool(closes.iloc[-1] > bench_ema)
+
+
 def fetch_nifty_benchmark(days: int = 365) -> pd.DataFrame | None:
     """Fetch Nifty 50 benchmark to allow RS calculations."""
     try:
@@ -147,8 +168,19 @@ def run_daily_job():
     total_realized_pnl = 0.0
 
     print("Fetching Nifty 50 benchmark...")
-    nifty_df = fetch_nifty_benchmark(days=365)
-    
+    nifty_df = fetch_nifty_benchmark(days=500)   # enough history for the regime EMA
+
+    # H1: market regime gate — exits still process, but no new entries open
+    # while the index is below its regime EMA.
+    regime_ok = True
+    if _cfg.REGIME_FILTER_ENABLED:
+        regime_ok = is_market_regime_ok(nifty_df)
+        if not regime_ok:
+            print(f"  [REGIME] Nifty below EMA-{_cfg.REGIME_EMA_PERIOD} "
+                  f"-- no new entries today.")
+
+    trailing = _cfg.TRAILING_EXIT_ENABLED
+
     # We'll cache stock data during the run so we don't fetch twice 
     # (once for exit check, once for entry check)
     stock_cache = {}
@@ -186,11 +218,14 @@ def run_daily_job():
             entry_price=pos["entry_price"],
             entry_date=pos["entry_date"],
             stop_loss=pos["stop_loss"],
-            target=pos["target"],
-            max_hold_days=MAX_HOLD_DAYS,
+            # H2: no fixed profit cap when trailing -- the ratcheted stop exits.
+            target=float("inf") if trailing else pos["target"],
+            max_hold_days=_cfg.TRAILING_MAX_HOLD_DAYS if trailing else MAX_HOLD_DAYS,
             partial_taken=pos.get("partial_taken", False),
         )
-        
+        if trailing and reason == "MOMENTUM_FADE":
+            reason = "HOLD"   # H2: the trailing stop, not RSI dips, ends winners
+
         latest_date = str(df.index[-1].date())
         latest_close = float(df["close"].iloc[-1])
 
@@ -240,6 +275,14 @@ def run_daily_job():
             exited_symbols.append(symbol)
             today_exits += 1
             print(f"  [EXIT] {symbol} @ {latest_close:.2f} | Reason: {reason} | PNL: {pnl_pct:+.2f}%")
+
+        # H2: ratchet the trailing stop on today's close for surviving positions
+        # (takes effect from the next scan, mirroring the backtest fill model).
+        if trailing and symbol not in exited_symbols:
+            if latest_close >= pos["entry_price"] * _cfg.TRAILING_ACTIVATION_GAIN:
+                new_stop = trailing_stop_update(pos["stop_loss"], latest_close)
+                if new_stop > pos["stop_loss"]:
+                    pos["stop_loss"] = round(new_stop, 2)
 
     # Remove fully exited symbols
     for s in exited_symbols:
@@ -354,8 +397,8 @@ def run_daily_job():
             "pass_count": pass_count
         })
         
-        # Only simulate entry if capacity allows
-        if result["signal"] and symbol not in positions and len(positions) < MAX_OPEN_POSITIONS:
+        # Only simulate entry if capacity allows (and H1 regime permits)
+        if result["signal"] and regime_ok and symbol not in positions and len(positions) < MAX_OPEN_POSITIONS:
                 latest_date = str(df.index[-1].date())
                 
                 # Risk calcs

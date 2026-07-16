@@ -142,6 +142,31 @@ def test_rs_condition_absent_when_disabled():
 
 
 # ──────────────────────────────────────────────
+# H1 in the paper engine: is_market_regime_ok
+# ──────────────────────────────────────────────
+
+def test_paper_regime_helper_tracks_index_vs_ema():
+    from paper_trade.paper_engine import is_market_regime_ok
+    n = 30
+    idx = pd.bdate_range("2026-01-01", periods=n)
+    rising = pd.Series(np.linspace(100.0, 130.0, n), index=idx)
+    bench = pd.DataFrame({"open": rising, "high": rising, "low": rising,
+                          "close": rising, "volume": np.full(n, 1e6)}, index=idx)
+    assert is_market_regime_ok(bench, ema_period=5) is True
+    falling = bench.assign(close=pd.Series(np.linspace(130.0, 100.0, n), index=idx))
+    assert is_market_regime_ok(falling, ema_period=5) is False
+
+
+def test_paper_regime_helper_fails_open_without_data():
+    from paper_trade.paper_engine import is_market_regime_ok
+    assert is_market_regime_ok(None) is True                      # no benchmark
+    idx = pd.bdate_range("2026-01-01", periods=3)
+    short = pd.DataFrame({"open": [1, 1, 1], "high": [1, 1, 1], "low": [1, 1, 1],
+                          "close": [1, 1, 1], "volume": [1, 1, 1]}, index=idx)
+    assert is_market_regime_ok(short, ema_period=200) is True     # EMA still NaN
+
+
+# ──────────────────────────────────────────────
 # Regression: tiny windows must not crash the screener
 # ──────────────────────────────────────────────
 

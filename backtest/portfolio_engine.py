@@ -34,7 +34,7 @@ from strategy.risk import (
 )
 from backtest.costs import one_side_cost_pct
 
-TRAILING_ACTIVATION_GAIN = 1.04   # trail only after +4% (mirrors risk.trailing_stop)
+TRAILING_ACTIVATION_GAIN = _cfg.TRAILING_ACTIVATION_GAIN
 
 TRADE_COLUMNS = [
     "symbol", "entry_date", "exit_date", "entry_price", "exit_price",
