@@ -27,6 +27,7 @@ from backtest import metrics as metrics_mod
 
 N_SEGMENTS = 3
 OOS_MIN_PF_RATIO = 0.6
+MIN_SEGMENT_TRADES = 15   # below this, a segment's profit factor is noise
 
 
 def split_indices(total: int, n_segments: int = N_SEGMENTS) -> list[tuple[int, int]]:
@@ -41,18 +42,32 @@ def split_indices(total: int, n_segments: int = N_SEGMENTS) -> list[tuple[int, i
 
 
 def evaluate_segments(in_sample_pf: float, oos_pfs: list[float],
-                      min_ratio: float = OOS_MIN_PF_RATIO) -> dict:
-    """Pass/fail verdict: each OOS profit factor must be >= min_ratio * in-sample PF."""
+                      min_ratio: float = OOS_MIN_PF_RATIO,
+                      in_sample_trades: int | None = None,
+                      min_trades: int = MIN_SEGMENT_TRADES) -> dict:
+    """Pass/fail verdict: each OOS profit factor must be >= min_ratio * in-sample PF.
+
+    The ratio test assumes the in-sample profit factor is a meaningful estimate.
+    When ``in_sample_trades`` is provided and falls below ``min_trades`` (e.g. a
+    regime filter legitimately blocks most of the in-sample window), the
+    in-sample PF is statistical noise, so the verdict falls back to an absolute
+    test: every OOS segment must simply be profitable (PF >= 1.0).  The result
+    carries ``low_sample=True`` so callers can surface the caveat.
+    """
+    if in_sample_trades is not None and in_sample_trades < min_trades:
+        failed = [i for i, pf in enumerate(oos_pfs) if pf < 1.0]
+        return {"passed": len(failed) == 0, "floor": 1.0,
+                "failed_segments": failed, "low_sample": True}
     floor = in_sample_pf * min_ratio
     failed = [i for i, pf in enumerate(oos_pfs) if pf < floor]
     return {"passed": len(failed) == 0, "floor": round(floor, 2),
-            "failed_segments": failed}
+            "failed_segments": failed, "low_sample": False}
 
 
-def _segment_pf(data_slice: dict, entry_decision=None, exit_decision=None,
-                warmup: int = 0, nifty_df: pd.DataFrame | None = None,
-                regime_ok: dict | None = None) -> float:
-    """Profit factor of one segment.
+def _segment_stats(data_slice: dict, entry_decision=None, exit_decision=None,
+                   warmup: int = 0, nifty_df: pd.DataFrame | None = None,
+                   regime_ok: dict | None = None) -> dict:
+    """Profit factor and trade count of one segment.
 
     ``warmup`` defaults to 0 because the data is already enriched (indicators
     warmed on the full history) before slicing; rows whose indicators are still
@@ -70,7 +85,16 @@ def _segment_pf(data_slice: dict, entry_decision=None, exit_decision=None,
     m = metrics_mod.compute_metrics(sim["trade_log"], sim["equity_curve"],
                                     sim["positions_count"], INITIAL_CAPITAL)
     pf = m["profit_factor"]
-    return 999.0 if pf == float("inf") else pf
+    return {"pf": 999.0 if pf == float("inf") else pf,
+            "trades": m["total_trades"]}
+
+
+def _segment_pf(data_slice: dict, entry_decision=None, exit_decision=None,
+                warmup: int = 0, nifty_df: pd.DataFrame | None = None,
+                regime_ok: dict | None = None) -> float:
+    """Profit factor of one segment (see :func:`_segment_stats`)."""
+    return _segment_stats(data_slice, entry_decision, exit_decision, warmup,
+                          nifty_df, regime_ok)["pf"]
 
 
 def run(watchlist: list[str] | None = None, days: int = 1200,
@@ -103,23 +127,31 @@ def run(watchlist: list[str] | None = None, days: int = 1200,
     bounds = split_indices(min_len, N_SEGMENTS)
 
     segment_pfs = []
+    segment_trades = []
     for seg_i, (start, end) in enumerate(bounds):
         data_slice = {s: df.iloc[start:end] for s, df in enriched.items()}
-        pf = _segment_pf(data_slice,
-                         nifty_df=benchmark if _cfg.RS_FILTER_ENABLED else None,
-                         regime_ok=regime_map)
-        segment_pfs.append(pf)
+        stats = _segment_stats(data_slice,
+                               nifty_df=benchmark if _cfg.RS_FILTER_ENABLED else None,
+                               regime_ok=regime_map)
+        segment_pfs.append(stats["pf"])
+        segment_trades.append(stats["trades"])
         label = "IN-SAMPLE" if seg_i == 0 else f"OOS #{seg_i}"
-        print(f"  Segment {seg_i} [{label}] rows {start}:{end} -> profit factor {pf:.2f}")
+        print(f"  Segment {seg_i} [{label}] rows {start}:{end} -> "
+              f"profit factor {stats['pf']:.2f} ({stats['trades']} trades)")
         if (end - start) < 250:
             print(f"    [!] Segment {seg_i} has only {end - start} rows — too few bars; "
                   f"this segment's verdict may be unreliable.")
 
-    verdict = evaluate_segments(segment_pfs[0], segment_pfs[1:])
+    verdict = evaluate_segments(segment_pfs[0], segment_pfs[1:],
+                                in_sample_trades=segment_trades[0])
+    if verdict.get("low_sample"):
+        print(f"\n  [!] In-sample segment has only {segment_trades[0]} trades — its PF is "
+              f"noise; using absolute OOS floor (PF >= 1.0) instead of the ratio test.")
     print("\n  " + ("[PASS] Strategy holds out-of-sample." if verdict["passed"]
                     else f"[FAIL] OOS degradation in segments {verdict['failed_segments']} "
                          f"(floor PF {verdict['floor']})."))
-    return {"passed": verdict["passed"], "segment_pfs": segment_pfs}
+    return {"passed": verdict["passed"], "segment_pfs": segment_pfs,
+            "segment_trades": segment_trades}
 
 
 if __name__ == "__main__":

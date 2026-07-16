@@ -26,7 +26,7 @@ from broker.zerodha_api import get_ohlcv_free
 from backtest.run_portfolio import load_universe, fetch_benchmark, build_regime_map
 from backtest.portfolio_engine import simulate
 from backtest.walk_forward import (
-    split_indices, evaluate_segments, _segment_pf, N_SEGMENTS,
+    split_indices, evaluate_segments, _segment_stats, N_SEGMENTS,
 )
 from backtest import metrics as metrics_mod
 
@@ -37,6 +37,7 @@ VARIANTS = [
     ("H1_REGIME", {"REGIME_FILTER_ENABLED": True}),
     ("H2_TRAILING", {"TRAILING_EXIT_ENABLED": True}),
     ("H3_RS", {"RS_FILTER_ENABLED": True}),
+    ("H1_H2", {"REGIME_FILTER_ENABLED": True, "TRAILING_EXIT_ENABLED": True}),
     ("ALL_THREE", {name: True for name in FLAG_NAMES}),
 ]
 
@@ -59,42 +60,55 @@ def _run_variant(name: str, flags: dict, data: dict, benchmark) -> dict:
 
         min_len = min(len(df) for df in data.values())
         seg_pfs = []
+        seg_trades = []
         for start, end in split_indices(min_len, N_SEGMENTS):
             data_slice = {s: df.iloc[start:end] for s, df in data.items()}
-            seg_pfs.append(_segment_pf(data_slice, nifty_df=nifty, regime_ok=regime))
-        verdict = evaluate_segments(seg_pfs[0], seg_pfs[1:])
+            stats = _segment_stats(data_slice, nifty_df=nifty, regime_ok=regime)
+            seg_pfs.append(stats["pf"])
+            seg_trades.append(stats["trades"])
+        verdict = evaluate_segments(seg_pfs[0], seg_pfs[1:],
+                                    in_sample_trades=seg_trades[0])
 
         mar = m["mar_ratio"]
         mar_s = "inf" if mar == float("inf") else f"{mar:.2f}"
+        segs = ", ".join(f"{p:.2f}({t})" for p, t in zip(seg_pfs, seg_trades))
+        low = " LOW-SAMPLE-IS" if verdict.get("low_sample") else ""
         print(f"  [{name}] {time.time() - t0:.0f}s | trades={m['total_trades']} "
               f"CAGR={m['cagr_pct']:+.2f}% MDD={m['max_drawdown_pct']:.2f}% MAR={mar_s} "
-              f"| seg PFs={[f'{p:.2f}' for p in seg_pfs]} "
-              f"OOS={'PASS' if verdict['passed'] else 'FAIL'}", flush=True)
-        return {"metrics": m, "segment_pfs": seg_pfs, "oos_passed": verdict["passed"]}
+              f"| seg PF(trades)=[{segs}] "
+              f"OOS={'PASS' if verdict['passed'] else 'FAIL'}{low}", flush=True)
+        return {"metrics": m, "segment_pfs": seg_pfs, "segment_trades": seg_trades,
+                "oos_passed": verdict["passed"],
+                "low_sample": verdict.get("low_sample", False)}
     finally:
         for flag, value in saved.items():
             setattr(_cfg, flag, value)
 
 
 def _print_table(results: dict) -> None:
-    print("\n" + "=" * 104)
+    print("\n" + "=" * 112)
     print(f"{'VARIANT':<12} {'TRADES':>6} {'WIN%':>6} {'PF':>6} {'EXP%':>6} "
           f"{'CAGR%':>7} {'MDD%':>6} {'MAR':>6} {'SHARPE':>7} {'EXPO%':>6} "
-          f"{'OOS PFs':>18} {'OOS':>5}")
-    print("-" * 104)
+          f"{'SEG PF(trades)':>26} {'OOS':>5}")
+    print("-" * 112)
     for name, r in results.items():
         m = r["metrics"]
         pf = m["profit_factor"]
         pf_s = "inf" if pf == float("inf") else f"{pf:.2f}"
         mar = m["mar_ratio"]
         mar_s = "inf" if mar == float("inf") else f"{mar:.2f}"
-        segs = "/".join(f"{p:.2f}" for p in r["segment_pfs"])
+        segs = "/".join(f"{p:.2f}({t})" for p, t in
+                        zip(r["segment_pfs"], r["segment_trades"]))
+        oos = "PASS" if r["oos_passed"] else "FAIL"
+        if r.get("low_sample"):
+            oos += "*"   # * = absolute OOS floor used (thin in-sample sample)
         print(f"{name:<12} {m['total_trades']:>6} {m['win_rate_pct']:>6.1f} {pf_s:>6} "
               f"{m['expectancy_pct']:>6.2f} {m['cagr_pct']:>7.2f} "
               f"{m['max_drawdown_pct']:>6.2f} {mar_s:>6} {m['sharpe']:>7.2f} "
-              f"{m['exposure_pct']:>6.1f} {segs:>18} "
-              f"{'PASS' if r['oos_passed'] else 'FAIL':>5}")
-    print("=" * 104)
+              f"{m['exposure_pct']:>6.1f} {segs:>26} {oos:>5}")
+    print("=" * 112)
+    print("  * absolute OOS floor (PF >= 1.0) used because the in-sample segment "
+          "had too few trades for the ratio test.")
 
 
 def main(days: int = 1200) -> dict:
