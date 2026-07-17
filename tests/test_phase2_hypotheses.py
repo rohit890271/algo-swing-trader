@@ -142,6 +142,36 @@ def test_rs_condition_absent_when_disabled():
 
 
 # ──────────────────────────────────────────────
+# Round 2 R-A: ATR-adaptive trailing distance
+# ──────────────────────────────────────────────
+
+def test_ratcheted_trailing_pct_mode(monkeypatch):
+    monkeypatch.setattr(config, "TRAILING_STOP_MODE", "pct")
+    # 3% below a 110 close = 106.70; ratchets up from 100.
+    assert pe.ratcheted_trailing_stop(100.0, 110.0, atr_value=5.0) == 106.7
+
+
+def test_ratcheted_trailing_atr_mode(monkeypatch):
+    monkeypatch.setattr(config, "TRAILING_STOP_MODE", "atr")
+    monkeypatch.setattr(config, "TRAILING_ATR_MULT", 2.0)
+    # 110 - 2.0*3 = 104.0 (wider than the 3% = 106.70 stop -> gives the trend room).
+    assert pe.ratcheted_trailing_stop(100.0, 110.0, atr_value=3.0) == 104.0
+
+
+def test_ratcheted_trailing_never_lowers(monkeypatch):
+    monkeypatch.setattr(config, "TRAILING_STOP_MODE", "atr")
+    monkeypatch.setattr(config, "TRAILING_ATR_MULT", 2.0)
+    # Candidate 104 < existing 108 -> keep 108.
+    assert pe.ratcheted_trailing_stop(108.0, 110.0, atr_value=3.0) == 108.0
+
+
+def test_ratcheted_trailing_atr_falls_back_without_atr(monkeypatch):
+    monkeypatch.setattr(config, "TRAILING_STOP_MODE", "atr")
+    # No usable ATR -> percent behaviour (106.70), never blows the stop away.
+    assert pe.ratcheted_trailing_stop(100.0, 110.0, atr_value=0.0) == 106.7
+
+
+# ──────────────────────────────────────────────
 # H2 interplay: partial exit must not lower a trailed stop
 # ──────────────────────────────────────────────
 

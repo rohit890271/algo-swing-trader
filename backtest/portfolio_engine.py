@@ -99,6 +99,20 @@ def _book_partial(positions: dict, trades: list, sym: str, exit_price: float,
     return (exit_price * sold) - exit_cost
 
 
+def ratcheted_trailing_stop(current_stop: float, close_px: float,
+                            atr_value: float = 0.0) -> float:
+    """New trailing stop, never lower than the current one.
+
+    Distance is fixed-percent (``config.TRAILING_STOP_MODE == "pct"``) or a
+    multiple of ATR (``"atr"``).  ATR mode falls back to percent when the ATR
+    value is missing, so a bad bar can't blow the stop away.
+    """
+    if _cfg.TRAILING_STOP_MODE == "atr" and atr_value and atr_value > 0:
+        candidate = close_px - _cfg.TRAILING_ATR_MULT * atr_value
+        return max(current_stop, round(candidate, 2))
+    return trailing_stop_update(current_stop, close_px)
+
+
 def _default_entry_decision(window: pd.DataFrame, mode: str) -> bool:
     return check_entry_signal(window, strategy_mode=mode)["signal"]
 
@@ -250,7 +264,10 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
                     continue
                 close_px = float(df.loc[date, "close"])
                 if close_px >= pos["entry_price"] * TRAILING_ACTIVATION_GAIN:
-                    pos["stop_loss"] = trailing_stop_update(pos["stop_loss"], close_px)
+                    atr_now = float(df.loc[date, "atr"]) if "atr" in df.columns \
+                        and pd.notna(df.loc[date, "atr"]) else 0.0
+                    pos["stop_loss"] = ratcheted_trailing_stop(pos["stop_loss"],
+                                                               close_px, atr_now)
 
         # ---- Phase 3: evaluate signals on TODAY's close, queue for next open ----
         regime_on = regime_ok.get(date, True) if regime_ok is not None else True

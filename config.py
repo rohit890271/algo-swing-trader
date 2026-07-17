@@ -65,6 +65,8 @@ REGIME_EMA_PERIOD: int = 200               # EMA period for the index regime che
 TRAILING_EXIT_ENABLED: bool = True         # H2: trail winners instead of fixed 8% target
 TRAILING_MAX_HOLD_DAYS: int = 20           # relaxed time stop used only when trailing
 TRAILING_ACTIVATION_GAIN: float = 1.04     # start trailing once price >= entry * this
+TRAILING_STOP_MODE: str = "pct"            # "pct" (fixed %) or "atr" (k x ATR) trailing distance
+TRAILING_ATR_MULT: float = 2.5             # ATR multiple used when TRAILING_STOP_MODE == "atr"
 
 RS_FILTER_ENABLED: bool = False            # H3: rejected in OOS validation -- keep off
 RS_LOOKBACK_DAYS: int = 63                 # ~3 months relative-strength lookback

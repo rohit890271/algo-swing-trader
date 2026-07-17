@@ -38,9 +38,8 @@ from config import (
 from broker.zerodha_api import get_ohlcv_free
 from strategy.indicators import enrich_with_indicators, ema
 from strategy.signals import check_entry_signal, check_exit_signal
-from strategy.risk import (
-    calculate_atr_stop_loss, calculate_target, position_size, trailing_stop_update,
-)
+from strategy.risk import calculate_atr_stop_loss, calculate_target, position_size
+from backtest.portfolio_engine import ratcheted_trailing_stop
 
 # ──────────────────────────────────────────────
 # Setup Paths & State Management
@@ -281,7 +280,9 @@ def run_daily_job():
         # (takes effect from the next scan, mirroring the backtest fill model).
         if trailing and symbol not in exited_symbols:
             if latest_close >= pos["entry_price"] * _cfg.TRAILING_ACTIVATION_GAIN:
-                new_stop = trailing_stop_update(pos["stop_loss"], latest_close)
+                atr_now = float(df["atr"].iloc[-1]) if "atr" in df.columns \
+                    and pd.notna(df["atr"].iloc[-1]) else 0.0
+                new_stop = ratcheted_trailing_stop(pos["stop_loss"], latest_close, atr_now)
                 if new_stop > pos["stop_loss"]:
                     pos["stop_loss"] = round(new_stop, 2)
 
