@@ -1,34 +1,43 @@
-"""Tests for forward paper-test equity persistence."""
-from __future__ import annotations
+"""Tests for forward paper-test state persistence.
 
-import json
+Trade accounting itself is shared with ``backtest.portfolio_engine`` (see
+``test_portfolio_engine_partial.py``); these cover the paper engine's own
+persistence layer.  Fill/cost/mark-to-market parity lives in
+``test_paper_forward.py``.
+"""
+from __future__ import annotations
 
 from paper_trade import paper_engine as pp
 
 
-def test_apply_realized_pnl_compounds():
-    state = {"equity": 100000.0, "realized_pnl": 0.0}
-    out = pp.apply_realized_pnl(state, pnl_amount=2500.0)
-    assert out["equity"] == 102500.0
-    assert out["realized_pnl"] == 2500.0
-
-
 def test_state_round_trips_to_disk(tmp_path):
     path = tmp_path / "portfolio_state.json"
-    pp.save_portfolio_state({"equity": 101000.0, "realized_pnl": 1000.0}, str(path))
+    pp.save_portfolio_state({"equity": 101000.0, "cash": 95000.0,
+                             "realized_pnl": 1000.0}, str(path))
     loaded = pp.load_portfolio_state(str(path))
     assert loaded["equity"] == 101000.0
+    assert loaded["cash"] == 95000.0
     assert loaded["realized_pnl"] == 1000.0
 
 
 def test_load_defaults_when_missing(tmp_path):
-    path = tmp_path / "missing.json"
-    loaded = pp.load_portfolio_state(str(path))
+    loaded = pp.load_portfolio_state(str(tmp_path / "missing.json"))
     assert loaded["equity"] == pp.INITIAL_CAPITAL
     assert loaded["realized_pnl"] == 0.0
 
 
-def test_partial_sold_qty_books_the_sold_half():
-    assert pp.partial_sold_qty(10) == 5    # even: sold == retained
-    assert pp.partial_sold_qty(11) == 6    # odd: sold is the larger remainder
-    assert pp.partial_sold_qty(1) == 0     # single share cannot be partialled
+def test_corrupt_state_falls_back_to_starting_capital(tmp_path):
+    # A truncated write must not wedge the forward test on the next run.
+    path = tmp_path / "corrupt.json"
+    path.write_text("{not json")
+    assert pp.load_portfolio_state(str(path))["equity"] == pp.INITIAL_CAPITAL
+
+
+def test_open_positions_round_trip(tmp_path, monkeypatch):
+    path = str(tmp_path / "open_positions.json")
+    monkeypatch.setattr(pp, "OPEN_POSITIONS_FILE", path)
+    book = {"AAA": {"entry_price": 100.0, "qty": 10, "stop_loss": 95.0,
+                    "target": 108.0, "partial_taken": False, "entry_cost": 8.0,
+                    "entry_date": "2026-07-20"}}
+    pp.save_open_positions(book)
+    assert pp.load_open_positions() == book

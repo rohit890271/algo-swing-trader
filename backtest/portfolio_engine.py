@@ -77,7 +77,7 @@ def _book_partial(positions: dict, trades: list, sym: str, exit_price: float,
     if pos["qty"] < 2:
         pos["partial_taken"] = True
         return 0.0
-    sold = pos["qty"] - max(1, pos["qty"] // 2)   # ceil half; matches paper_engine.partial_sold_qty
+    sold = pos["qty"] - max(1, pos["qty"] // 2)   # ceil half; retained half is floor
     entry_cost_share = round(pos["entry_cost"] * sold / pos["qty"], 4)
     gross = sold * (exit_price - pos["entry_price"])
     exit_cost = exit_price * sold * side_cost

@@ -31,6 +31,9 @@ python -m backtest.phase2_experiments
 # Daily paper-trade scan: runs once immediately, then schedules 09:20 IST daily
 python paper_trade/paper_engine.py
 
+# Score the forward paper test with the backtest's own metrics code
+python -m paper_trade.forward_report
+
 # Analyze a saved trade log CSV
 python analyze_results.py
 ```
@@ -64,10 +67,17 @@ Data flow: `yfinance OHLCV -> enrich_with_indicators -> check_entry_signal/check
 - **backtest/run_portfolio.py** — thin runner (network I/O lives here); `main.py` calls it.
 - **backtest/walk_forward.py** — strict non-overlapping 3-segment split over the portfolio engine;
   flags out-of-sample profit-factor degradation vs. `OOS_MIN_PF_RATIO`.
-- **paper_trade/paper_engine.py** — daily live scan. Loads open positions from
-  `paper_trades/open_positions.json`, checks exits, scans the full watchlist for entries, writes
-  `paper_trades/daily_scan_log.csv` (one row per stock per scan with pass/fail reason) and
-  `paper_trades/closed_trades.csv`.
+- **paper_trade/paper_engine.py** — daily live scan, running the *same fill model as the
+  backtest*: signals fire on a bar's close and fill at the **next bar's open** (queued in
+  `paper_trades/pending_orders.json`), stops/targets fill intrabar, and both legs are charged
+  trading costs. Trade accounting reuses `_close_position` / `_book_partial` from
+  `backtest/portfolio_engine.py`, so the two engines cannot drift. Artifacts under
+  `paper_trades/`: `open_positions.json`, `pending_orders.json`, `portfolio_state.json`
+  (marked equity + free cash + realized P&L), `equity_curve.csv` (one mark-to-market point
+  per bar), `closed_trades.csv` (backtest `TRADE_COLUMNS` schema), `daily_scan_log.csv`.
+- **paper_trade/forward_report.py** — scores the forward test through
+  `backtest.metrics.compute_metrics`, the same function that produced the research-log numbers.
+  Suppresses CAGR/MAR below 60 sessions and warns below 30 closed trades.
 
 ## Conventions
 
@@ -105,9 +115,12 @@ The original entry-signal duplication, stop-loss doc drift, mode-default mismatc
 - **The backtest now models shared capital (portfolio-level).** `backtest/portfolio_engine.py`
   trades one capital account across the whole universe with a max concurrent position cap,
   next-open fills, and costs — it no longer pretends each symbol has its own unlimited capital.
-- **Forward-test equity persists.** The paper engine now carries a running equity figure across
-  daily runs (`load_portfolio_state`/`save_portfolio_state`/`apply_realized_pnl` in
-  `paper_trade/paper_engine.py`), stored at `paper_trades/portfolio_state.json`. Sector limits
+- **Forward-test state persists and is marked to market.** The paper engine carries free cash,
+  marked equity, and realized P&L across runs in `paper_trades/portfolio_state.json`, and sizes
+  new positions off *current* equity (`size_for_equity`), not `INITIAL_CAPITAL`. Artifact paths
+  in the persistence helpers resolve at **call time**, not as default arguments — binding them
+  as defaults made the paths un-redirectable and leaked test writes into the live directory.
+  Sector limits
   (`MAX_SECTOR_POSITIONS`, `can_open_new_position`) are still defined but **not wired in** — no
   sector map. (Open item for pre-deployment.)
 - **Survivorship bias**: the watchlist is *today's* index constituents applied to historical data,

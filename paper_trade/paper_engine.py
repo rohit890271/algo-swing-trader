@@ -39,7 +39,11 @@ from broker.zerodha_api import get_ohlcv_free
 from strategy.indicators import enrich_with_indicators, ema
 from strategy.signals import check_entry_signal, check_exit_signal
 from strategy.risk import calculate_atr_stop_loss, calculate_target, position_size
-from backtest.portfolio_engine import ratcheted_trailing_stop
+from backtest.costs import one_side_cost_pct
+from backtest.portfolio_engine import (
+    ratcheted_trailing_stop, _close_position, _book_partial,
+    DISCRETIONARY_EXITS, TRADE_COLUMNS,
+)
 
 # ──────────────────────────────────────────────
 # Setup Paths & State Management
@@ -49,6 +53,9 @@ PAPER_DIR = os.path.join(os.path.dirname(__file__), "..", "paper_trades")
 OPEN_POSITIONS_FILE = os.path.join(PAPER_DIR, "open_positions.json")
 CLOSED_TRADES_FILE = os.path.join(PAPER_DIR, "closed_trades.csv")
 PORTFOLIO_STATE_FILE = os.path.join(PAPER_DIR, "portfolio_state.json")
+PENDING_FILE = os.path.join(PAPER_DIR, "pending_orders.json")
+EQUITY_CURVE_FILE = os.path.join(PAPER_DIR, "equity_curve.csv")
+DAILY_SCAN_LOG_FILE = os.path.join(PAPER_DIR, "daily_scan_log.csv")
 
 os.makedirs(PAPER_DIR, exist_ok=True)
 
@@ -68,47 +75,148 @@ def save_open_positions(positions: dict) -> None:
         json.dump(positions, f, indent=4)
 
 
-def load_portfolio_state(path: str = PORTFOLIO_STATE_FILE) -> dict:
-    """Load the running forward-test equity, defaulting to the starting capital."""
+def load_portfolio_state(path: str | None = None) -> dict:
+    """Load the running forward-test book: marked equity, free cash, realized P&L.
+
+    ``cash`` backfills from ``equity`` for state files written before
+    mark-to-market existed (at that point the book was tracked flat, so the two
+    were the same number).
+
+    ``path`` resolves at call time, not import time, so redirecting the
+    module-level artifact paths actually takes effect.
+    """
+    path = path or PORTFOLIO_STATE_FILE
     if os.path.exists(path):
         try:
             with open(path, "r") as f:
                 data = json.load(f)
-            return {"equity": float(data.get("equity", INITIAL_CAPITAL)),
+            equity = float(data.get("equity", INITIAL_CAPITAL))
+            return {"equity": equity,
+                    "cash": float(data.get("cash", equity)),
                     "realized_pnl": float(data.get("realized_pnl", 0.0))}
         except (json.JSONDecodeError, ValueError):
             pass
-    return {"equity": float(INITIAL_CAPITAL), "realized_pnl": 0.0}
+    return {"equity": float(INITIAL_CAPITAL), "cash": float(INITIAL_CAPITAL),
+            "realized_pnl": 0.0}
 
 
-def save_portfolio_state(state: dict, path: str = PORTFOLIO_STATE_FILE) -> None:
-    with open(path, "w") as f:
+def save_portfolio_state(state: dict, path: str | None = None) -> None:
+    with open(path or PORTFOLIO_STATE_FILE, "w") as f:
         json.dump(state, f, indent=4)
 
 
-def apply_realized_pnl(state: dict, pnl_amount: float) -> dict:
-    """Return a new state with ``pnl_amount`` (INR) added to equity and realized P&L."""
-    return {"equity": round(state["equity"] + pnl_amount, 2),
-            "realized_pnl": round(state["realized_pnl"] + pnl_amount, 2)}
+def load_pending(path: str | None = None) -> dict:
+    """Load the next-open order queues, defaulting to empty."""
+    path = path or PENDING_FILE
+    if os.path.exists(path):
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+            return {"entries": data.get("entries", {}) or {},
+                    "exits": data.get("exits", {}) or {}}
+        except json.JSONDecodeError:
+            pass
+    return {"entries": {}, "exits": {}}
 
 
-def partial_sold_qty(qty: int) -> int:
-    """Shares booked on a 50% partial exit: total minus the retained half.
+def save_pending(pending: dict, path: str | None = None) -> None:
+    with open(path or PENDING_FILE, "w") as f:
+        json.dump(pending, f, indent=4)
 
-    The retained half is ``max(1, qty // 2)`` (matching the position-mutation
-    logic), so a 1-share position books 0 (cannot be partialled).
+
+def should_fill_pending(signal_date: str, bar_date: str) -> bool:
+    """True once a bar *newer* than the signal bar has printed.
+
+    Signals are generated on a bar's close and filled at the **next** bar's
+    open, mirroring the backtest.  Re-running the engine on the same bar (or on
+    a stale download) must not fill anything, because the open we would fill at
+    has not happened yet.
     """
-    return qty - max(1, qty // 2)
+    return bar_date > signal_date
+
+
+def mark_to_market(cash: float, positions: dict, prices: dict) -> float:
+    """Account equity: free cash plus open positions at last traded price.
+
+    Symbols missing from ``prices`` (failed download) contribute nothing rather
+    than a guessed value — a data outage must not invent equity.
+    """
+    held = sum(pos["qty"] * prices[sym]
+               for sym, pos in positions.items() if sym in prices)
+    return round(cash + held, 2)
+
+
+def entry_cost(price: float, qty: int) -> float:
+    """One-leg trading cost (INR) on ``qty`` shares at ``price``."""
+    return round(price * qty * one_side_cost_pct(), 4)
+
+
+def size_for_equity(equity: float, entry_price: float, stop_loss: float,
+                    risk_pct: float = POSITION_RISK_PCT) -> int:
+    """Shares to buy, risking ``risk_pct``% of *current* equity to the stop.
+
+    Returns 0 for degenerate risk (stop at or above entry) rather than falling
+    back to an arbitrary quantity — an unsized setup is simply skipped.
+    """
+    try:
+        return position_size(capital=equity, entry_price=entry_price,
+                             stop_loss_price=stop_loss, risk_pct=risk_pct / 100.0)
+    except (ValueError, ZeroDivisionError):
+        return 0
+
+
+def append_equity_point(path: str, date_str: str, equity: float) -> None:
+    """Record one mark-to-market point, replacing any existing row for that bar.
+
+    Re-running the engine on the same bar overwrites rather than appends, so the
+    daily-return series stays one-point-per-day (Sharpe depends on it).
+    """
+    rows: dict[str, float] = {}
+    if os.path.exists(path):
+        with open(path, "r", newline="") as f:
+            for row in csv.DictReader(f):
+                rows[row["date"]] = float(row["equity"])
+    rows[date_str] = round(float(equity), 2)
+    with open(path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["date", "equity"])
+        writer.writeheader()
+        for d in sorted(rows):
+            writer.writerow({"date": d, "equity": rows[d]})
+
+
+def load_equity_curve(path: str | None = None) -> pd.Series:
+    """The forward-test equity curve as a date-indexed Series (empty if absent)."""
+    path = path or EQUITY_CURVE_FILE
+    if not os.path.exists(path):
+        return pd.Series(dtype=float)
+    df = pd.read_csv(path, parse_dates=["date"])
+    if df.empty:
+        return pd.Series(dtype=float)
+    return pd.Series(df["equity"].astype(float).values,
+                     index=pd.DatetimeIndex(df["date"]))
 
 
 def log_closed_trade(trade: dict) -> None:
+    """Append one booked trade in the backtest's ``TRADE_COLUMNS`` schema.
+
+    Same columns as ``backtest.portfolio_engine`` so ``backtest.metrics`` can
+    score the forward test with the identical code path as the backtest.
+    """
     file_exists = os.path.exists(CLOSED_TRADES_FILE)
     with open(CLOSED_TRADES_FILE, "a", newline="") as f:
-        fieldnames = ["symbol", "entry_date", "exit_date", "entry_price", "exit_price", "pnl_pct", "exit_reason"]
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=TRADE_COLUMNS)
         if not file_exists:
             writer.writeheader()
-        writer.writerow(trade)
+        writer.writerow({k: trade.get(k) for k in TRADE_COLUMNS})
+
+
+def load_closed_trades(path: str | None = None) -> pd.DataFrame:
+    """Booked forward trades as a DataFrame (empty frame if none yet)."""
+    path = path or CLOSED_TRADES_FILE
+    if not os.path.exists(path):
+        return pd.DataFrame(columns=TRADE_COLUMNS)
+    df = pd.read_csv(path)
+    return df if not df.empty else pd.DataFrame(columns=TRADE_COLUMNS)
 
 
 def is_market_regime_ok(nifty_df: pd.DataFrame | None,
@@ -160,11 +268,15 @@ def run_daily_job():
     print(f"Strategy Mode: {STRATEGY_MODE}")
 
     positions = load_open_positions()
+    pending = load_pending()
     portfolio_state = load_portfolio_state()
+    cash = portfolio_state["cash"]
+    equity_for_sizing = portfolio_state["equity"]
+    side_cost = one_side_cost_pct()
 
+    booked: list[dict] = []          # trades closed this run
     today_entries = 0
     today_exits = 0
-    total_realized_pnl = 0.0
 
     print("Fetching Nifty 50 benchmark...")
     nifty_df = fetch_nifty_benchmark(days=500)   # enough history for the regime EMA
@@ -204,14 +316,126 @@ def run_daily_job():
         except Exception:
             return None
 
-    # 1. CHECK EXITS FOR OPEN POSITIONS
-    exited_symbols = []
-    
-    for symbol, pos in positions.items():
-        df = get_stock_data(symbol)
+    # Establish the newest completed bar seen across the book + watchlist.
+    # Signals fire on this bar's close; fills land on the NEXT bar's open.
+    def _latest_date(df: pd.DataFrame) -> str:
+        return str(df.index[-1].date())
+
+    held_data = {s: get_stock_data(s) for s in list(positions) + list(pending["exits"])}
+    held_data = {s: d for s, d in held_data.items() if d is not None}
+    pending_data = {s: get_stock_data(s) for s in pending["entries"]}
+    pending_data = {s: d for s, d in pending_data.items() if d is not None}
+
+    known_dates = [_latest_date(d) for d in list(held_data.values()) + list(pending_data.values())]
+    bar_date = max(known_dates) if known_dates else None
+
+    # ── PHASE 1a: fill queued discretionary exits at this bar's OPEN ──
+    for symbol, order in list(pending["exits"].items()):
+        df = held_data.get(symbol)
+        if df is None or symbol not in positions:
+            pending["exits"].pop(symbol, None)
+            continue
+        if not should_fill_pending(order["signal_date"], _latest_date(df)):
+            continue
+        open_px = float(df["open"].iloc[-1])
+        cash += _close_position(positions, booked, symbol, open_px,
+                                _latest_date(df), order["reason"], side_cost)
+        pending["exits"].pop(symbol, None)
+        today_exits += 1
+        print(f"  [EXIT] {symbol} @ open {open_px:.2f} | Reason: {order['reason']}")
+
+    # ── PHASE 1b: fill queued entries at this bar's OPEN ──
+    for symbol, order in list(pending["entries"].items()):
+        df = pending_data.get(symbol)
+        if df is None:
+            pending["entries"].pop(symbol, None)
+            continue
+        if not should_fill_pending(order["signal_date"], _latest_date(df)):
+            continue
+        pending["entries"].pop(symbol, None)
+        if symbol in positions or len(positions) >= MAX_OPEN_POSITIONS:
+            continue
+
+        open_px = float(df["open"].iloc[-1])
+        atr_val = df["atr"].iloc[-1]
+        stop_loss = calculate_atr_stop_loss(open_px, atr_value=atr_val)
+        qty = size_for_equity(equity_for_sizing, open_px, stop_loss)
+        if qty <= 0:
+            continue
+        cost = entry_cost(open_px, qty)
+        if cash < (open_px * qty) + cost:
+            print(f"  [SKIP] {symbol} -- insufficient cash for {qty} @ {open_px:.2f}")
+            continue
+
+        cash -= (open_px * qty) + cost
+        positions[symbol] = {
+            "entry_date": _latest_date(df),
+            "entry_price": round(open_px, 2),
+            "stop_loss": stop_loss,
+            "target": calculate_target(open_px, target_pct=0.08),
+            "qty": qty,
+            "partial_taken": False,
+            "entry_cost": cost,
+        }
+        today_entries += 1
+        sl_pct = ((open_px - stop_loss) / open_px) * 100.0
+        print(f"  [ENTRY] {symbol} @ open {open_px:.2f} | Qty: {qty} "
+              f"| SL: {stop_loss:.2f} (-{sl_pct:.1f}%)")
+
+    # Refresh data for anything now held that we have not fetched yet.
+    for symbol in positions:
+        if symbol not in held_data:
+            d = get_stock_data(symbol)
+            if d is not None:
+                held_data[symbol] = d
+
+    # ── PHASE 2: intrabar stop / target on this bar, stop checked first ──
+    for symbol in list(positions):
+        df = held_data.get(symbol)
         if df is None:
             continue
-            
+        pos = positions[symbol]
+        bar = df.iloc[-1]
+        low, high = float(bar["low"]), float(bar["high"])
+
+        if low <= pos["stop_loss"]:
+            cash += _close_position(positions, booked, symbol, pos["stop_loss"],
+                                    _latest_date(df), "STOP_LOSS", side_cost)
+            today_exits += 1
+            print(f"  [EXIT] {symbol} @ {pos['stop_loss']:.2f} | Reason: STOP_LOSS")
+        elif not trailing and high >= pos["target"]:
+            cash += _close_position(positions, booked, symbol, pos["target"],
+                                    _latest_date(df), "TARGET", side_cost)
+            today_exits += 1
+            print(f"  [EXIT] {symbol} @ {pos['target']:.2f} | Reason: TARGET")
+
+    # ── PHASE 2b: partial booking + trailing ratchet on this bar's close ──
+    for symbol in list(positions):
+        df = held_data.get(symbol)
+        if df is None:
+            continue
+        pos = positions[symbol]
+        latest_close = float(df["close"].iloc[-1])
+
+        if not pos.get("partial_taken", False) and \
+                latest_close >= pos["entry_price"] * 1.05:
+            cash += _book_partial(positions, booked, symbol, latest_close,
+                                  _latest_date(df), side_cost)
+            print(f"  [PARTIAL EXIT] {symbol} @ {latest_close:.2f}")
+
+        if trailing and latest_close >= pos["entry_price"] * _cfg.TRAILING_ACTIVATION_GAIN:
+            atr_now = float(df["atr"].iloc[-1]) if "atr" in df.columns \
+                and pd.notna(df["atr"].iloc[-1]) else 0.0
+            new_stop = ratcheted_trailing_stop(pos["stop_loss"], latest_close, atr_now)
+            if new_stop > pos["stop_loss"]:
+                pos["stop_loss"] = round(new_stop, 2)
+
+    # ── PHASE 3: queue discretionary exits for the next open ──
+    for symbol in list(positions):
+        df = held_data.get(symbol)
+        if df is None or symbol in pending["exits"]:
+            continue
+        pos = positions[symbol]
         reason = check_exit_signal(
             df=df,
             entry_price=pos["entry_price"],
@@ -224,78 +448,17 @@ def run_daily_job():
         )
         if trailing and reason == "MOMENTUM_FADE":
             reason = "HOLD"   # H2: the trailing stop, not RSI dips, ends winners
+        if reason in DISCRETIONARY_EXITS:
+            pending["exits"][symbol] = {"signal_date": _latest_date(df), "reason": reason}
+            print(f"  [QUEUED EXIT] {symbol} -- {reason} at next open")
 
-        latest_date = str(df.index[-1].date())
-        latest_close = float(df["close"].iloc[-1])
-
-        if reason == "PARTIAL_EXIT_5PCT":
-            # Book 50% profit
-            pnl_pct = ((latest_close - pos["entry_price"]) / pos["entry_price"]) * 100.0
-            total_realized_pnl += pnl_pct
-
-            sold_qty = partial_sold_qty(pos["qty"])
-            pnl_amount = (latest_close - pos["entry_price"]) * sold_qty
-            portfolio_state = apply_realized_pnl(portfolio_state, pnl_amount)
-
-            pos["partial_taken"] = True
-            pos["qty"] = max(1, pos["qty"] // 2)
-            # Breakeven is a floor: never lower a stop already trailed above entry.
-            pos["stop_loss"] = max(pos["stop_loss"], pos["entry_price"])
-
-            trade_log = {
-                "symbol": symbol,
-                "entry_date": pos["entry_date"],
-                "exit_date": latest_date,
-                "entry_price": round(pos["entry_price"], 2),
-                "exit_price": round(latest_close, 2),
-                "pnl_pct": round(pnl_pct, 2),
-                "exit_reason": reason
-            }
-            log_closed_trade(trade_log)
-            print(f"  [PARTIAL EXIT] {symbol} @ {latest_close:.2f} | PNL: +{pnl_pct:.2f}%")
-            
-        elif reason != "HOLD":
-            # Full Exit
-            pnl_pct = ((latest_close - pos["entry_price"]) / pos["entry_price"]) * 100.0
-            total_realized_pnl += pnl_pct
-
-            pnl_amount = (latest_close - pos["entry_price"]) * pos["qty"]
-            portfolio_state = apply_realized_pnl(portfolio_state, pnl_amount)
-
-            trade_log = {
-                "symbol": symbol,
-                "entry_date": pos["entry_date"],
-                "exit_date": latest_date,
-                "entry_price": round(pos["entry_price"], 2),
-                "exit_price": round(latest_close, 2),
-                "pnl_pct": round(pnl_pct, 2),
-                "exit_reason": reason
-            }
-            log_closed_trade(trade_log)
-            exited_symbols.append(symbol)
-            today_exits += 1
-            print(f"  [EXIT] {symbol} @ {latest_close:.2f} | Reason: {reason} | PNL: {pnl_pct:+.2f}%")
-
-        # H2: ratchet the trailing stop on today's close for surviving positions
-        # (takes effect from the next scan, mirroring the backtest fill model).
-        if trailing and symbol not in exited_symbols:
-            if latest_close >= pos["entry_price"] * _cfg.TRAILING_ACTIVATION_GAIN:
-                atr_now = float(df["atr"].iloc[-1]) if "atr" in df.columns \
-                    and pd.notna(df["atr"].iloc[-1]) else 0.0
-                new_stop = ratcheted_trailing_stop(pos["stop_loss"], latest_close, atr_now)
-                if new_stop > pos["stop_loss"]:
-                    pos["stop_loss"] = round(new_stop, 2)
-
-    # Remove fully exited symbols
-    for s in exited_symbols:
-        del positions[s]
-
-    # 2. CHECK ENTRIES & BUILD SCAN LOG
+    # ── PHASE 4: scan for entry signals, queue them for the next open ──
     scan_results = []
+    candidates: list[tuple[float, str]] = []   # (setup strength, symbol)
     import re
-    
+
     print(f"\nScanning {len(WATCHLIST)} stocks for entries/rejections...")
-    
+
     for symbol in WATCHLIST:
         df = get_stock_data(symbol)
         if df is None:
@@ -399,47 +562,42 @@ def run_daily_job():
             "pass_count": pass_count
         })
         
-        # Only simulate entry if capacity allows (and H1 regime permits)
-        if result["signal"] and regime_ok and symbol not in positions and len(positions) < MAX_OPEN_POSITIONS:
-                latest_date = str(df.index[-1].date())
-                
-                # Risk calcs
-                atr_val = df["atr"].iloc[-1]
-                stop_loss = calculate_atr_stop_loss(latest_close, atr_value=atr_val)
-                target = calculate_target(latest_close, target_pct=0.08)
-                
-                try:
-                    qty = position_size(
-                        capital=INITIAL_CAPITAL, 
-                        entry_price=latest_close, 
-                        stop_loss_price=stop_loss, 
-                        risk_pct=POSITION_RISK_PCT / 100.0
-                    )
-                except ValueError:
-                    qty = 1 # Fallback if math fails
-                
-                if qty <= 0:
-                    continue # Skip if risk is too high to buy even 1 share
-                    
-                positions[symbol] = {
-                    "entry_date": latest_date,
-                    "entry_price": round(latest_close, 2),
-                    "stop_loss": stop_loss,
-                    "target": target,
-                    "qty": qty,
-                    "partial_taken": False
-                }
-                
-                today_entries += 1
-                sl_pct = ((latest_close - stop_loss) / latest_close) * 100.0
-                print(f"  [ENTRY] {symbol} @ {latest_close:.2f} | Qty: {qty} | SL: {stop_loss:.2f} (-{sl_pct:.1f}%)")
+        # Queue the entry for the next open (H1 regime gates new longs only).
+        if result["signal"] and regime_ok and symbol not in positions \
+                and symbol not in pending["entries"]:
+            candidates.append((latest_adx, symbol))
 
-    # Save state
+    # More candidates than free slots: rank by trend strength (ADX), same
+    # deterministic tie-break the backtest uses.
+    free_slots = max(0, MAX_OPEN_POSITIONS - len(positions))
+    candidates.sort(reverse=True)
+    for _, symbol in candidates[:free_slots]:
+        df = stock_cache[symbol]
+        pending["entries"][symbol] = {"signal_date": str(df.index[-1].date())}
+        print(f"  [QUEUED ENTRY] {symbol} -- fills at next open")
+
+    # ── Mark the book to market and persist state ──
+    prices = {s: float(d["close"].iloc[-1]) for s, d in stock_cache.items()}
+    equity = mark_to_market(cash, positions, prices)
+    realized_this_run = sum(t["net_pnl"] for t in booked)
+    portfolio_state = {
+        "equity": equity,
+        "cash": round(cash, 2),
+        "realized_pnl": round(portfolio_state["realized_pnl"] + realized_this_run, 2),
+    }
+
+    for trade in booked:
+        log_closed_trade(trade)
+
     save_open_positions(positions)
+    save_pending(pending)
     save_portfolio_state(portfolio_state)
+    if bar_date is None and prices:
+        bar_date = max(str(d.index[-1].date()) for d in stock_cache.values())
+    if bar_date:
+        append_equity_point(EQUITY_CURVE_FILE, bar_date, equity)
 
     # Save daily scan log
-    DAILY_SCAN_LOG_FILE = os.path.join(PAPER_DIR, "daily_scan_log.csv")
     if scan_results:
         keys = ["date", "symbol", "close", "rsi", "adx", "pullback_pct", "volume_ok", "signal"]
         file_exists = os.path.exists(DAILY_SCAN_LOG_FILE)
@@ -455,12 +613,18 @@ def run_daily_job():
     print(f"\n   =======================================")
     print(f"   [DASHBOARD] PAPER TRADE — {date_str}")
     print(f"   =======================================")
-    print(f"   Open Positions : {len(positions)}")
-    print(f"   Today Entries  : {today_entries}")
-    print(f"   Today Exits    : {today_exits}")
-    print(f"   Total P&L      : {total_realized_pnl:+.2f}%")
-    print(f"   Forward Equity : {portfolio_state['equity']:,.2f} "
+    print(f"   Bar Date       : {bar_date or 'n/a'}")
+    print(f"   Open Positions : {len(positions)} / {MAX_OPEN_POSITIONS}")
+    print(f"   Queued Entries : {len(pending['entries'])}")
+    print(f"   Queued Exits   : {len(pending['exits'])}")
+    print(f"   Filled Entries : {today_entries}")
+    print(f"   Filled Exits   : {today_exits}")
+    print(f"   Booked P&L     : {realized_this_run:+,.2f} (this run, net of costs)")
+    print(f"   Free Cash      : {cash:,.2f}")
+    print(f"   Forward Equity : {equity:,.2f} "
           f"(realized {portfolio_state['realized_pnl']:+,.2f})")
+    ret_pct = (equity - INITIAL_CAPITAL) / INITIAL_CAPITAL * 100.0
+    print(f"   Total Return   : {ret_pct:+.2f}%")
     print(f"   =======================================")
     print(f"   [SCAN] CLOSEST TO ENTRY (Top 5)")
     print(f"   =======================================")
