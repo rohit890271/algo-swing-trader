@@ -22,3 +22,7 @@ trades_log_portfolio.csv
 *.whl
 *.zip
 
+
+# Paper-engine run logs (scheduled task output)
+paper_trades/engine_log.txt
+paper_trades/engine_log.txt.1

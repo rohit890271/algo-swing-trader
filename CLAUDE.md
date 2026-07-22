@@ -31,6 +31,9 @@ python -m backtest.phase2_experiments
 # Daily paper-trade scan: runs once immediately, then schedules 09:20 IST daily
 python paper_trade/paper_engine.py
 
+# One-shot scan (what the Windows scheduled task runs); exit code 0 = success
+python -m paper_trade.run_once
+
 # Score the forward paper test with the backtest's own metrics code
 python -m paper_trade.forward_report
 
@@ -75,6 +78,14 @@ Data flow: `yfinance OHLCV -> enrich_with_indicators -> check_entry_signal/check
   `paper_trades/`: `open_positions.json`, `pending_orders.json`, `portfolio_state.json`
   (marked equity + free cash + realized P&L), `equity_curve.csv` (one mark-to-market point
   per bar), `closed_trades.csv` (backtest `TRADE_COLUMNS` schema), `daily_scan_log.csv`.
+- **paper_trade/run_once.py** — one-shot entry point for Windows Task Scheduler. `paper_engine.py`
+  blocks forever in its own `schedule` loop, which is the wrong shape when the OS owns the
+  schedule; this runs a single scan, tees output to `paper_trades/engine_log.txt` (rotated at
+  2 MB), and exits non-zero on failure so a broken run shows as "Last Run Result" in the UI.
+  Runs under `pythonw.exe` (no console), so `sys.stdout` is `None` — the tee tolerates that.
+  Registered task: **`AlgoSwingPaperScan`**, weekdays 18:30 IST (after the 15:30 NSE close, so
+  the day's bar is settled), `-StartWhenAvailable` to catch up after the machine was off.
+  Manage with `Get-ScheduledTask -TaskName AlgoSwingPaperScan`.
 - **paper_trade/forward_report.py** — scores the forward test through
   `backtest.metrics.compute_metrics`, the same function that produced the research-log numbers.
   Suppresses CAGR/MAR below 60 sessions and warns below 30 closed trades.
