@@ -66,7 +66,9 @@ def evaluate_segments(in_sample_pf: float, oos_pfs: list[float],
 
 def _segment_stats(data_slice: dict, entry_decision=None, exit_decision=None,
                    warmup: int = 0, nifty_df: pd.DataFrame | None = None,
-                   regime_ok: dict | None = None) -> dict:
+                   regime_ok: dict | None = None,
+                   max_positions: int = MAX_OPEN_POSITIONS,
+                   risk_pct: float = POSITION_RISK_PCT) -> dict:
     """Profit factor and trade count of one segment.
 
     ``warmup`` defaults to 0 because the data is already enriched (indicators
@@ -79,7 +81,7 @@ def _segment_stats(data_slice: dict, entry_decision=None, exit_decision=None,
     benchmark data introduces no look-ahead.
     """
     sim = simulate(data_slice, start_capital=INITIAL_CAPITAL, strategy_mode=STRATEGY_MODE,
-                   max_positions=MAX_OPEN_POSITIONS, risk_pct=POSITION_RISK_PCT,
+                   max_positions=max_positions, risk_pct=risk_pct,
                    warmup=warmup, entry_decision=entry_decision, exit_decision=exit_decision,
                    nifty_df=nifty_df, regime_ok=regime_ok)
     m = metrics_mod.compute_metrics(sim["trade_log"], sim["equity_curve"],

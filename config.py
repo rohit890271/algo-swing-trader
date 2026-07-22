@@ -92,6 +92,10 @@ RELAXED_MIN_AVG_VOLUME: int = 200_000
 # ──────────────────────────────────────────────
 COMMISSION_PCT: float = 0.03               # brokerage + charges (%)
 SLIPPAGE_PCT: float = 0.05                 # estimated slippage (%)
+# Yield earned on uninvested cash (e.g. an overnight/liquid fund). This is cash
+# management, NOT strategy alpha -- report it separately from edge metrics.
+# 0.0 = the Phase 1/2 assumption that idle cash earns nothing.
+IDLE_CASH_ANNUAL_YIELD_PCT: float = 0.0
 PAPER_TRADE: bool = True                   # True = no real orders placed
 MAX_HOLD_DAYS: int = 7                    # max trading days to hold a swing trade
 SURVIVORSHIP_HAIRCUT_PCT: float = 20.0     # blunt downward adjustment to returns for survivorship bias
