@@ -174,6 +174,11 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
     all_dates = sorted(set().union(*[df.index for df in price_data.values()])) \
         if price_data else []
 
+    # Idle-cash yield: geometric daily rate so it compounds to the stated annual
+    # figure. Applied to the uninvested balance only (cash management, not alpha).
+    cash_yield = _cfg.IDLE_CASH_ANNUAL_YIELD_PCT
+    daily_cash_rate = ((1.0 + cash_yield / 100.0) ** (1.0 / 252.0) - 1.0) if cash_yield else 0.0
+
     cash = float(start_capital)
     positions: dict[str, dict] = {}
     trades: list[dict] = []
@@ -191,7 +196,11 @@ def simulate(price_data: dict[str, pd.DataFrame], start_capital: float = INITIAL
             eq += pos["qty"] * float(price)
         return eq
 
-    for date in all_dates:
+    for day_i, date in enumerate(all_dates):
+        # ---- Phase 0: accrue overnight yield on the uninvested balance ----
+        if day_i > 0 and daily_cash_rate and cash > 0:
+            cash *= (1.0 + daily_cash_rate)
+
         # ---- Phase 1a: fill queued exits at TODAY's open ----
         for sym, reason in pending_exits:
             if sym not in positions:
